@@ -29,12 +29,12 @@ async def client() -> AsyncIterator[SuperheroClient]:
 
 
 @respx.mock
-async def test_search_puts_exact_match_first_and_trims_fields(client):
-    """Exact name matches come first and placeholder values like "-" are dropped."""
+async def test_search_keeps_only_exact_matches_and_trims_fields(client):
+    """An exact name match wins outright, and placeholder values like "-" are dropped."""
     respx.get(SEARCH_URL).respond(json=THOR_PAYLOAD)
     heroes = await client.search("Thor")
 
-    assert [hero.name for hero in heroes] == ["Thor", "Thor Girl"]
+    assert [hero.name for hero in heroes] == ["Thor"]
     assert heroes[0].profile == {"name": "Thor", "publisher": "Marvel Comics", "powerstats": {"strength": "100"}}
 
 
@@ -90,9 +90,17 @@ async def test_client_errors_are_not_retried(client):
 
 @respx.mock
 async def test_substring_only_matches_are_dropped(client):
-    """Searching "thor" drops "Lex Luthor" but keeps whole-word matches like "Thor Girl"."""
-    payload = {"response": "success", "results": [
-        {"id": "405", "name": "Lex Luthor"}, {"id": "660", "name": "Thor Girl"}, {"id": "659", "name": "Thor"},
-    ]}
+    """Without an exact match, whole-word matches stay and substring-only hits ("Lex Luthor") go."""
+    payload = {"response": "success", "results": [{"id": "405", "name": "Lex Luthor"}, {"id": "660", "name": "Thor Girl"}]}
     respx.get(SEARCH_URL).respond(json=payload)
-    assert [hero.name for hero in await client.search("thor")] == ["Thor", "Thor Girl"]
+    assert [hero.name for hero in await client.search("thor")] == ["Thor Girl"]
+
+
+@respx.mock
+async def test_several_exact_matches_all_stay(client):
+    """Two characters named "Batman" are both returned so the model can tell them apart."""
+    payload = {"response": "success", "results": [
+        {"id": "69", "name": "Batman"}, {"id": "70", "name": "Batman"}, {"id": "71", "name": "Batman II"},
+    ]}
+    respx.get(f"{BASE_URL}/token123/search/batman").respond(json=payload)
+    assert [hero.id for hero in await client.search("Batman")] == ["69", "70"]
