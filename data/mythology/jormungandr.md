@@ -1,0 +1,36 @@
+# Jörmungandr
+Source: https://en.wikipedia.org/wiki/Jörmungandr
+
+## Introduction
+In Norse mythology, Jörmungandr (Old Norse: Jǫrmungandr, see Etymology), also known as the Midgard Serpent or World Serpent (Old Norse: Miðgarðsormr, "worm of Midgard"), is an unfathomably large and monstrous sea serpent (or "worm", see Germanic dragon) who dwells in the world sea, encircling the Earth (Midgard) and biting his own tail, an example of an ouroboros. As a result of him surrounding Midgard, the beast is referred to as the World Serpent. Jörmungandr releasing his tail is one of the signs of the beginning of Ragnarök.
+Jörmungandr is said to be the middle child of the god Loki and the jötunn Angrboða. According to the Prose Edda, Odin took Loki's three children by Angrboða – the wolf Fenrir, underworld ruler Hel, and the serpent Jörmungandr – and removed them from Asgard (the world of the Æsir). The serpent Jörmungandr was tossed into the great ocean that encircles Midgard. There the serpent grew so large that he was able to surround the Earth and grasp his own tail. The old Norse thunder god, Thor, has a lengthy feud with Jörmungandr and the serpent is regarded as his archenemy. During Ragnarök, Thor and Jörmungandr engage in a ferocious battle, culminating in both of their deaths.
+
+## Etymology
+The name Jǫrmungandr is a poetic title and consists of the prefix jǫrmun- and the word gandr. The prefix "jǫrmun-" denotes something huge, vast, or superhuman, by some speculated to be a noun, jǫrmunr, meaning the "world" (the vastness). The suffix "gandr" can mean a variety of things in Old Norse, but mainly refers to elongated entities and or supernatural beings. Gandr can refer to, among other things: snake, fjord, river, staff, cane, mast, stem, branch, penis, bind, and the like (mainly in a "supernatural" or "living" sense). The term "Jörmungandr" therefore has several possible meanings in connection with its mythology, such as: "the world serpent", "the world river" (a synonym for the sea where he dwells), "the world staff or branch" (a connection to the world tree Yggdrasil), as well as "the world bind" (the serpent's coiling around the world, biting its own tail, symbolising the world's circle of life).
+
+## Stories
+There are three preserved myths detailing Thor's encounters with Jörmungandr:
+
+### Lifting the cat
+In one story, Thor encounters the jötunn king Útgarða-Loki and has to perform deeds for him, one of which is a challenge of Thor's strength.  Útgarða-Loki goads Thor into attempting to lift the World Serpent, disguised by magic as a huge cat. Thor grabs the cat around its midsection but manages to raise the cat only high enough for one of its paws to leave the floor. Útgarða-Loki later explains his deception and that Thor's lifting the cat was an impressive deed, as he had stretched the serpent so that it had almost reached the sky. Many watching became fearful when they saw one paw lift off the ground. If Thor had managed to lift the cat completely from the ground, he would have altered the boundaries of the universe.
+
+### Thor's fishing trip
+Jörmungandr and Thor meet again when Thor goes fishing with the jötunn Hymir. When Hymir refuses to provide Thor with bait, Thor strikes the head off Hymir's largest ox to use it. They row to a point where Hymir often sat and caught flatfish and where he drew up two whales. Thor demands to go further out to sea and does so despite Hymir's protest. Thor then prepares a strong line and a large hook and baits it with the ox head, which Jörmungandr bites. Thor pulls the serpent from the water, and the two face one another, Jörmungandr blowing atter. Hymir goes pale with fear. As Thor grabs his hammer to kill the serpent, the jötunn cuts the line, leaving the serpent to sink beneath the waves and return to its original position encircling the earth. The Eddic poem Hymiskviða has a similar ending to the story, but in earlier Scandinavian versions of the myth in skaldic poetry, Thor successfully captures and kills the serpent by striking it on the head.
+Thor's fishing for Jörmungandr was one of the most popular motifs in Norse art. Four picture stones that are believed to depict the myth are the Altuna Runestone and the Ardre VIII image stone in Sweden, the Hørdum stone in Denmark, and a stone slab at Gosforth, Cumbria by the same sculptor as the Gosforth Cross. Many of these depictions show the giant cutting the fishing line; on the Altuna stone, Thor is alone, implying he successfully killed the serpent. The Ardre VIII stone may depict more than one stage in the events: a man entering a house where an ox is standing, two men leaving, one with something on his shoulder, and two men using a spear to fish. The image on this stone has been dated to the 8th to 10th century. If the stone is correctly interpreted as a depiction of this myth, it would indicate that the story was preserved essentially unchanged for several centuries prior to the recording of the version in the Prose Edda around the year 1220.
+
+### Ragnarök
+As recounted in Snorri's Gylfaginning based on the Eddic poem Völuspá, one sign of the coming of Ragnarök is the violent unrest of the sea as Jörmungandr releases its tail from its mouth. The sea will flood and the serpent will thrash onto the land. It will advance, spraying poison to fill the air and water, beside Fenrir, whose eyes and nostrils blaze with fire and whose gape touches the earth and the sky. They will join the sons of Muspell to confront the gods on the plain of Vigrid. Here is where the last meeting between the serpent and Thor is predicted to occur. He will eventually kill Jörmungandr but will fall dead after walking nine paces, having been poisoned by the serpent's deadly venom. Thor's final battle with Jörmungandr has been identified, with other scenes of Ragnarök, on the Gosforth Cross.
+
+## Analysis
+Thor's fishing for Jörmungandr has been taken as one of the similarities between him and the Hindu god Indra, who in Vedic mythology slays the dragon Vritra, and has also been related to a Balto-Slavic motif of the storm god combatting a serpent. An alternative analysis of the episode by Preben Meulengracht Sørensen is that it was a youthful indiscretion on the part of Thor, retold to emphasize the order and balance of the cosmos, in which Jörmungandr played a vital role. John Lindow draws a parallel between Jörmungandr's biting of its own tail and the binding of Fenrir, as part of a recurring theme of the bound monster in Norse mythology, where an enemy of the gods is bound but destined to break free at Ragnarök.
+
+## Eponym
+Asteroid 471926 Jörmungandr was named after the mythological sea serpent. The official naming citation was published by the Minor Planet Center on 25 September 2018 (M.P.C. 111804).
+
+## Popular culture media appearances
+Jörmungandr has made a variety of appearances in popculture media. Some notable examples include:
+Vikings – Jörmungandr makes an appearance in season six of the History Channel television show Vikings.
+God of War – Jörmungandr is a mainstay character in the video games God of War from 2018 and God of War Ragnarök from 2022.
+For Honor – Worshipers of Jörmungandr, who are also named after it, are a playable character in the video game series For Honor (2017).
+
+## Gallery
