@@ -9,7 +9,7 @@ from typing import Annotated, Any, Protocol
 
 from pydantic import BaseModel, StringConstraints, ValidationError
 
-from app.llm import AssistantTurn, Chat, LLMClient, ToolCall
+from app.llm import AssistantTurn, Chat, LLMClient, TokenUsage, ToolCall
 from app.retrieval.base import Retriever
 from app.schemas import AskResponse, Source, SourceType
 from app.sources.superhero import Hero, SuperheroAPIError
@@ -120,6 +120,8 @@ class _RequestState:
         self.sources: dict[str, Source] = {}
         self.tools_used: list[str] = []
         self.warnings: list[str] = []
+        self.usage = TokenUsage()
+        self.llm_calls = 0
         self._seen_calls: set[tuple[str, str]] = set()
 
     def add_source(self, source_type: SourceType, title: str, url: str | None) -> str:
@@ -179,6 +181,8 @@ class Agent:
             LLMError: If the LLM can't be reached or rejects the request; tool failures don't raise.
         """
         turn, state = await self._llm.run_conversation(lambda chat: self._converse(chat, question))
+        logger.info("Answered with %d LLM calls: %d prompt tokens (%d cached), %d completion tokens",
+                    state.llm_calls, state.usage.prompt, state.usage.cached_prompt, state.usage.completion)
         answer = _clean_answer(turn.content or "") or NO_ANSWER
         return AskResponse(
             answer=answer,
@@ -197,25 +201,33 @@ class Agent:
             The model's final turn (no tool calls) and the sources/warnings collected on the way.
         """
         state = _RequestState()
+
+        async def counted_chat(*args: Any, **kwargs: Any) -> AssistantTurn:
+            """Call the model and add the turn's token usage to this request's totals."""
+            turn = await chat(*args, **kwargs)
+            state.usage += turn.usage
+            state.llm_calls += 1
+            return turn
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
         ]
-        turn = await chat(messages, tools=TOOLS)
+        turn = await counted_chat(messages, tools=TOOLS)
         rounds = 0
         while turn.tool_calls and rounds < self._max_tool_rounds:
             results = await asyncio.gather(*(self._run_tool(call, state) for call in turn.tool_calls))
             messages += _tool_exchange(turn, results)
-            turn = await chat(messages, tools=TOOLS)
+            turn = await counted_chat(messages, tools=TOOLS)
             rounds += 1
 
         if turn.tool_calls:
             # Out of tool rounds: decline the pending calls and force an answer from what we have.
             messages += _tool_exchange(turn, [TOOL_BUDGET_EXHAUSTED] * len(turn.tool_calls))
-            turn = await chat(messages, tools=TOOLS, tool_choice="none")
+            turn = await counted_chat(messages, tools=TOOLS, tool_choice="none")
         if not (turn.content or "").strip():
             # Models occasionally end with an empty message; asking again usually produces the answer.
-            turn = await chat(messages, tools=TOOLS, tool_choice="none")
+            turn = await counted_chat(messages, tools=TOOLS, tool_choice="none")
         return turn, state
 
     async def _run_tool(self, call: ToolCall, state: _RequestState) -> str:

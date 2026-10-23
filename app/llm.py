@@ -53,12 +53,27 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """Tokens reported by the provider for one call; cached_prompt is the part served from its prompt cache."""
+
+    prompt: int = 0
+    completion: int = 0
+    cached_prompt: int = 0
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        """Sum two usages, e.g. across the turns of one question."""
+        return TokenUsage(self.prompt + other.prompt, self.completion + other.completion,
+                          self.cached_prompt + other.cached_prompt)
+
+
+@dataclass(frozen=True)
 class AssistantTurn:
     """Provider-agnostic view of a reply, so the agent doesn't depend on SDK types."""
 
     content: str | None
     model: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 Chat = Callable[..., Awaitable[AssistantTurn]]
@@ -163,7 +178,7 @@ class LLMClient:
             raise LLMError(f"LLM provider {provider.name} rejected the request") from error
 
         logger.info("LLM reply from %s (%s)", provider.name, provider.model)
-        return _to_turn(response.choices[0].message, provider.model)
+        return _to_turn(response.choices[0].message, provider.model, _usage(response))
 
     async def _create_with_short_wait(self, provider: Provider, request: dict[str, Any]) -> Any:
         """Call the provider, retrying once on the two failures a second try usually fixes.
@@ -207,11 +222,25 @@ def _retry_after_seconds(error: openai.RateLimitError) -> float | None:
         return None
 
 
-def _to_turn(message: Any, model: str) -> AssistantTurn:
+def _usage(response: Any) -> TokenUsage:
+    """Token counts from a completion; providers that omit them (or the cache detail) count as zero."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return TokenUsage()
+    details = getattr(usage, "prompt_tokens_details", None)
+    return TokenUsage(
+        prompt=getattr(usage, "prompt_tokens", 0) or 0,
+        completion=getattr(usage, "completion_tokens", 0) or 0,
+        cached_prompt=getattr(details, "cached_tokens", 0) or 0,
+    )
+
+
+def _to_turn(message: Any, model: str, usage: TokenUsage | None = None) -> AssistantTurn:
     """Convert an SDK chat message into an AssistantTurn."""
     return AssistantTurn(
         content=message.content,
         model=model,
+        usage=usage or TokenUsage(),
         tool_calls=[
             ToolCall(
                 id=call.id,
