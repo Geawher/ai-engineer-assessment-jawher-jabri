@@ -28,12 +28,12 @@ BEHAVIOURS: list[tuple[str, str, Callable[[Case], bool]]] = [
     ("Say it doesn't know", "says the sources don't contain the answer instead of inventing one",
      lambda case: case.expect_unknown or bool({"unanswerable", "nonexistent", "missing-hero", "number-bait",
                                                 "aggregate"} & set(case.tags))),
-    ("Answer from both sources", "correct answer citing a mythology passage and the superhero data",
-     lambda case: set(case.expected_tools) == {ToolName.SEARCH_MYTHOLOGY, ToolName.GET_SUPERHERO}),
+    ("Answer from both sources", "correct answer citing a document passage and the superhero data",
+     lambda case: set(case.expected_tools) == {ToolName.SEARCH_DOCUMENTS, ToolName.GET_SUPERHERO}),
     ("Answer from superhero data", "correct answer citing the superhero data",
      lambda case: case.expected_tools == [ToolName.GET_SUPERHERO]),
-    ("Answer from mythology", "correct answer citing the right mythology passage",
-     lambda case: case.expected_tools == [ToolName.SEARCH_MYTHOLOGY]),
+    ("Answer from documents", "correct answer citing the right document passage",
+     lambda case: case.expected_tools == [ToolName.SEARCH_DOCUMENTS]),
 ]
 # Behaviours where a failure means the bot produced content it shouldn't have.
 _SHOULD_HOLD_BACK = {"Decline off-topic requests", "Correct false or leading premises", "Refuse outside knowledge",
@@ -105,10 +105,10 @@ def _behaviour_lines(results: list[Result], cases: dict[str, Case]) -> list[str]
 def _source_set(tools: Iterable[str]) -> str:
     """A readable name for a set of tools."""
     tools = set(tools)
-    if {ToolName.SEARCH_MYTHOLOGY, ToolName.GET_SUPERHERO} <= tools:
+    if {ToolName.SEARCH_DOCUMENTS, ToolName.GET_SUPERHERO} <= tools:
         return "both"
-    if ToolName.SEARCH_MYTHOLOGY in tools:
-        return "mythology"
+    if ToolName.SEARCH_DOCUMENTS in tools:
+        return "documents"
     if ToolName.GET_SUPERHERO in tools:
         return "superhero"
     return "none"
@@ -116,7 +116,7 @@ def _source_set(tools: Iterable[str]) -> str:
 
 def _routing_lines(results: list[Result], cases: dict[str, Case]) -> list[str]:
     """Which sources each question needed (rows) against which it used (columns)."""
-    columns = ["mythology", "superhero", "both", "none"]
+    columns = ["documents", "superhero", "both", "none"]
     matrix: dict[str, Counter] = defaultdict(Counter)
     for result in results:
         if result.get("error"):
@@ -155,7 +155,7 @@ def _retrieval_lines(results: list[Result], cases: dict[str, Case], article_titl
         queries = result.get("search_queries", [])
         searches.append(len(queries))
         empty_searches += sum(not query["titles"] for query in queries)
-        if not expected or not queries or ToolName.SEARCH_MYTHOLOGY not in case.expected_tools:
+        if not expected or not queries or ToolName.SEARCH_DOCUMENTS not in case.expected_tools:
             continue
         ranks = [rank for query in queries for rank, title in enumerate(query["titles"], start=1) if fold(title) in expected]
         best_ranks.append(min(ranks) if ranks else None)

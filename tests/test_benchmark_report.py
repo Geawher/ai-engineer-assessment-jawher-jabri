@@ -12,15 +12,15 @@ def make_case(**fields) -> Case:
 
 
 @pytest.mark.parametrize(("fields", "label"), [
-    ({"tags": ["prompt-injection"], "expected_tools": ["search_mythology"]}, "Resist prompt injection"),
+    ({"tags": ["prompt-injection"], "expected_tools": ["search_documents"]}, "Resist prompt injection"),
     ({"expect_refusal": True}, "Decline off-topic requests"),
     ({"tags": ["off-topic-entity"]}, "Decline off-topic requests"),
     ({"tags": ["leading"], "expected_tools": ["get_superhero"]}, "Correct false or leading premises"),
     ({"tags": ["outside-knowledge"]}, "Refuse outside knowledge"),
     ({"expect_unknown": True, "expected_tools": ["get_superhero"]}, "Say it doesn't know"),
-    ({"expected_tools": ["search_mythology", "get_superhero"]}, "Answer from both sources"),
+    ({"expected_tools": ["search_documents", "get_superhero"]}, "Answer from both sources"),
     ({"expected_tools": ["get_superhero"]}, "Answer from superhero data"),
-    ({"expected_tools": ["search_mythology"]}, "Answer from mythology"),
+    ({"expected_tools": ["search_documents"]}, "Answer from documents"),
 ])
 def test_behaviour_labels_first_match_wins(fields, label):
     """Holding-back behaviours take priority over the answer-from-a-source labels."""
@@ -33,8 +33,8 @@ def test_mrr_counts_misses_as_zero():
 
 
 @pytest.mark.parametrize(("tools", "name"), [
-    (["search_mythology"], "mythology"), (["get_superhero"], "superhero"),
-    (["get_superhero", "search_mythology"], "both"), ([], "none"),
+    (["search_documents"], "documents"), (["get_superhero"], "superhero"),
+    (["get_superhero", "search_documents"], "both"), ([], "none"),
 ])
 def test_source_set_names(tools, name):
     """Tool sets map to the routing table's row and column names."""

@@ -12,15 +12,17 @@ from app.retrieval.bm25 import BM25Retriever
 from app.sources.superhero import Hero, SuperheroAPIError
 
 CHUNKS = [
-    Chunk("thor:0", "Thor", "Introduction", "https://en.wikipedia.org/wiki/Thor",
+    Chunk("thor:0", "mythology", "Thor", "Introduction", "https://en.wikipedia.org/wiki/Thor",
           "Thor is a hammer-wielding god associated with thunder, lightning and storms. He wields Mjölnir."),
-    Chunk("odin:0", "Odin", "Introduction", "https://en.wikipedia.org/wiki/Odin",
+    Chunk("odin:0", "mythology", "Odin", "Introduction", "https://en.wikipedia.org/wiki/Odin",
           "Odin is a widely revered god associated with wisdom, healing, death and royalty."),
-    Chunk("zeus:0", "Zeus", "Introduction", "https://en.wikipedia.org/wiki/Zeus",
+    Chunk("zeus:0", "mythology", "Zeus", "Introduction", "https://en.wikipedia.org/wiki/Zeus",
           "Zeus is the sky and thunder god in ancient Greek religion and king of the gods on Mount Olympus."),
 ]
 
 T = TypeVar("T")
+
+COLLECTIONS = {"mythology": "Norse and Greek mythology."}
 
 THOR_HERO = Hero(id="659", name="Thor", profile={"name": "Thor", "publisher": "Marvel Comics"})
 

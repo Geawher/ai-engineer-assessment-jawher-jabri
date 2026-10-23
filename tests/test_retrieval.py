@@ -27,7 +27,7 @@ def test_tokenize_folds_accents_and_drops_stopwords():
 
 def test_parse_article_splits_by_section_with_anchors():
     """Chunks link to their section, respect the size cap and get unique ids despite repeated headings."""
-    chunks = parse_article("thor", ARTICLE)
+    chunks = parse_article("thor", ARTICLE, "mythology")
 
     assert chunks[0].section == "Introduction"
     assert chunks[0].url == "https://en.wikipedia.org/wiki/Thor"

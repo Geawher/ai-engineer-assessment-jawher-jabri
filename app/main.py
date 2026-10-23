@@ -11,7 +11,8 @@ from app.agent import Agent
 from app.config import get_settings
 from app.llm import LLMClient, LLMError, LLMUnavailableError
 from app.retrieval.bm25 import BM25Retriever
-from app.retrieval.loader import load_corpus
+from app.retrieval.loader import load_collections
+from app.retrieval.titles import TitleIndex
 from app.schemas import AskRequest, AskResponse
 from app.sources.superhero import SuperheroClient
 
@@ -23,9 +24,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Build the index and clients once at startup and close them on shutdown."""
     settings = get_settings()
-    chunks = load_corpus(settings.data_dir)
-    logger.info("Indexed %d mythology chunks from %s", len(chunks), settings.data_dir)
-    retriever = BM25Retriever(chunks)  # raises on an empty corpus: better to fail at startup
+    chunks, collections = load_collections(settings.documents_dir)  # raises if there is none: fail at startup
+    logger.info("Indexed %d chunks from collections %s", len(chunks), ", ".join(collections))
+    retriever = BM25Retriever(chunks)
 
     llm = LLMClient.from_settings(settings)
     async with httpx.AsyncClient(timeout=settings.superhero_timeout_seconds, follow_redirects=True) as http:
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cache_ttl_seconds=settings.superhero_cache_ttl_seconds,
         )
         app.state.agent = Agent(llm, retriever, superheroes,
+                                collections=collections, titles=TitleIndex(chunks),
                                 top_k=settings.retrieval_top_k,
                                 max_tool_rounds=settings.max_tool_rounds)
         yield

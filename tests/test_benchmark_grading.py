@@ -17,7 +17,7 @@ def make_response(answer: str = "", tools: list[str] | None = None, sources: lis
     return AskResponse(answer=answer, sources=sources or [], tools_used=tools or [])
 
 
-def source(title: str, source_type: SourceType = SourceType.MYTHOLOGY_DATASET) -> Source:
+def source(title: str, source_type: SourceType = SourceType.DOCUMENT) -> Source:
     """A source with only the fields grading looks at."""
     return Source(id="S1", type=source_type, title=title)
 
@@ -55,13 +55,13 @@ def test_source_subject(title, subject):
 class TestRoute:
     def test_required_tools_must_be_used(self):
         """Missing a required tool fails routing."""
-        case = make_case(expected_tools=["search_mythology", "get_superhero"])
-        assert not grade(case, make_response(tools=["search_mythology"]))[Check.ROUTE]
+        case = make_case(expected_tools=["search_documents", "get_superhero"])
+        assert not grade(case, make_response(tools=["search_documents"]))[Check.ROUTE]
 
     def test_extra_tool_is_allowed_but_reported(self):
         """An unneeded lookup passes routing but shows up in extra_tools."""
-        case = make_case(expected_tools=["search_mythology"])
-        response = make_response(tools=["search_mythology", "get_superhero"])
+        case = make_case(expected_tools=["search_documents"])
+        response = make_response(tools=["search_documents", "get_superhero"])
         assert grade(case, response)[Check.ROUTE]
         assert extra_tools(case, response) == ["get_superhero"]
 
@@ -69,7 +69,7 @@ class TestRoute:
         """When no tool is required, any tool outside optional_tools fails."""
         case = make_case(expected_tools=[], optional_tools=["get_superhero"])
         assert grade(case, make_response(tools=["get_superhero"]))[Check.ROUTE]
-        assert not grade(case, make_response(tools=["search_mythology"]))[Check.ROUTE]
+        assert not grade(case, make_response(tools=["search_documents"]))[Check.ROUTE]
 
 
 class TestRefusalAndUnknown:
@@ -122,7 +122,7 @@ class TestSources:
 
     def test_expected_source_types(self):
         """A "both" question needs one source of each type."""
-        case = make_case(expected_source_types=["mythology_dataset", "superhero_api"])
+        case = make_case(expected_source_types=["document", "superhero_api"])
         assert not grade(case, make_response(sources=[source("Thor — Introduction")]))[Check.SOURCES]
 
 

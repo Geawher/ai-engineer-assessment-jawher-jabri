@@ -9,7 +9,7 @@ Question = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 
 
 class SourceType(StrEnum):
-    MYTHOLOGY_DATASET = "mythology_dataset"
+    DOCUMENT = "document"
     SUPERHERO_API = "superhero_api"
     LLM = "llm"
 
@@ -25,6 +25,7 @@ class Source(BaseModel):
     type: SourceType
     title: str
     url: str | None = None
+    collection: str | None = None  # set for documents: which collection the passage came from
 
 
 class AskResponse(BaseModel):

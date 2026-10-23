@@ -16,7 +16,7 @@ import sys
 import httpx
 
 from app.config import get_settings
-from app.retrieval.loader import load_corpus
+from app.retrieval.loader import load_collections
 from app.sources.superhero import SuperheroClient
 from benchmark.grading import Case, contains_all_groups, fold, load_cases
 
@@ -27,7 +27,7 @@ CATEGORIES_FROM_API = {"superhero"}
 async def main() -> int:
     """Validate all cases; return a process exit code (1 if any case is unanswerable)."""
     settings = get_settings()
-    articles = _article_texts(settings.data_dir)
+    articles = _article_texts(settings.documents_dir)
     cases = load_cases()
     problems: list[str] = []
 
@@ -49,10 +49,10 @@ async def main() -> int:
     return 1 if problems else 0
 
 
-def _article_texts(data_dir) -> dict[str, str]:
+def _article_texts(documents_dir) -> dict[str, str]:
     """Full text per article title."""
     texts: dict[str, list[str]] = {}
-    for chunk in load_corpus(data_dir):
+    for chunk in load_collections(documents_dir)[0]:
         texts.setdefault(chunk.title, []).append(chunk.text)
     return {title: " ".join(parts) for title, parts in texts.items()}
 

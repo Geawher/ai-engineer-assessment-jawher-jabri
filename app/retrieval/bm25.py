@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from itertools import islice
 
 from rank_bm25 import BM25Okapi
 
@@ -15,12 +16,12 @@ what when where which who whom why will with you your about tell
 """.split())
 
 
-def tokenize(text: str) -> list[str]:
-    """Lowercase, accent-fold and split text into word tokens, dropping stopwords."""
+def tokenize(text: str, keep_stopwords: bool = False) -> list[str]:
+    """Lowercase, accent-fold and split text into word tokens, dropping stopwords unless asked to keep them."""
     # Fold accents so "Mjolnir" matches "Mjölnir" and "Ragnarok" matches "Ragnarök".
     folded = unicodedata.normalize("NFKD", text.lower())
     folded = "".join(char for char in folded if not unicodedata.combining(char))
-    return [token for token in _TOKEN_RE.findall(folded) if token not in _STOPWORDS]
+    return [token for token in _TOKEN_RE.findall(folded) if keep_stopwords or token not in _STOPWORDS]
 
 
 class BM25Retriever:
@@ -38,11 +39,16 @@ class BM25Retriever:
         # Title and section are indexed with the body so "Thor" ranks chunks *about* Thor.
         self._index = BM25Okapi([tokenize(f"{chunk.title} {chunk.section} {chunk.text}") for chunk in chunks])
 
-    def search(self, query: str, k: int) -> list[Chunk]:
-        """Return up to k chunks with a positive BM25 score, best first."""
+    def search(self, query: str, k: int, collection: str | None = None) -> list[Chunk]:
+        """Return up to k chunks with a positive BM25 score, best first, optionally from one collection.
+
+        One index covers every collection so scores stay comparable when searching them all.
+        """
         tokens = tokenize(query)
         if not tokens:
             return []
         scores = self._index.get_scores(tokens)
         ranked = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
-        return [self._chunks[i] for i in ranked[:k] if scores[i] > 0]
+        matches = (self._chunks[i] for i in ranked
+                   if scores[i] > 0 and collection in (None, self._chunks[i].collection))
+        return list(islice(matches, k))
