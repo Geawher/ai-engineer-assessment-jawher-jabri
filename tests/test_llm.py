@@ -192,3 +192,17 @@ async def test_retries_cover_a_rate_limit_followed_by_a_malformed_tool_call():
     llm = LLMClient([Provider("p0", "model-0", primary)], temperature=0, max_rate_limit_wait=1)
     turn = await llm.complete(_MESSAGES)
     assert (turn.content, primary.calls) == ("third time lucky", 3)
+
+
+async def test_token_usage_is_reported_including_cache_hits():
+    """Prompt, completion and cached tokens come through; a provider without usage reports zeros."""
+    usage = SimpleNamespace(prompt_tokens=900, completion_tokens=40,
+                            prompt_tokens_details=SimpleNamespace(cached_tokens=640))
+    response = reply("hi")
+    response.usage = usage
+    llm, _ = client_with(response)
+    turn = await llm.complete(_MESSAGES)
+    assert (turn.usage.prompt, turn.usage.completion, turn.usage.cached_prompt) == (900, 40, 640)
+
+    llm_without_usage, _ = client_with(reply("hi"))
+    assert (await llm_without_usage.complete(_MESSAGES)).usage.prompt == 0

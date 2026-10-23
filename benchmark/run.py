@@ -30,6 +30,7 @@ from app.retrieval.loader import load_corpus
 from app.schemas import AskResponse
 from app.sources.superhero import Hero, SuperheroAPIError, SuperheroClient
 from benchmark.grading import Case, Check, extra_tools, fold, grade, load_cases
+from benchmark.judge import Judge
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RETRY_DELAYS_SECONDS = (20, 45, 90)  # free tiers recover within a minute or two
@@ -44,6 +45,8 @@ class Trace:
     search_queries: list[dict[str, Any]] = field(default_factory=list)
     hero_lookups: list[dict[str, Any]] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
+    # Per LLM call, abandoned attempts included: they cost tokens too.
+    usage: list[dict[str, int]] = field(default_factory=list)
     provider_attempts: int = 0
 
     def start_attempt(self) -> None:
@@ -107,6 +110,7 @@ class RecordingLLM:
                 """Delegate one turn and record its model."""
                 turn = await chat(messages, tools=tools, tool_choice=tool_choice)
                 self.trace.models.append(turn.model)
+                self.trace.usage.append(asdict(turn.usage))
                 return turn
 
             return await conversation(recording_chat)
@@ -118,6 +122,8 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
     """Ask every case through a fully wired agent and grade the answers."""
     retriever = BM25Retriever(load_corpus(settings.data_dir))
     llm = LLMClient.from_settings(settings)
+    judge = Judge.from_env()
+    print(f"LLM judge: {'on' if judge else 'off (set JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL)'}")
     results = []
     async with httpx.AsyncClient(timeout=settings.superhero_timeout_seconds, follow_redirects=True) as http:
         superheroes = SuperheroClient(
@@ -135,17 +141,19 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
             )
 
         for index, case in enumerate(cases, start=1):
-            result = await _run_case(case, make_agent)
+            result = await _run_case(case, make_agent, judge)
             results.append(result)
             print(f"[{index}/{len(cases)}] {case.id:8} {'PASS' if result['passed'] else 'FAIL'} "
                   f"{result['latency_seconds']:5.1f}s {result.get('failed_checks') or result.get('error') or ''}")
             await asyncio.sleep(delay_seconds)
     await llm.close()
+    if judge:
+        await judge.close()
     return results
 
 
-async def _run_case(case: Case, make_agent: Callable[[Trace], Agent]) -> dict[str, Any]:
-    """Ask one question (retrying when every provider is rate-limited) and grade it."""
+async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Judge | None) -> dict[str, Any]:
+    """Ask one question (retrying when every provider is rate-limited) and grade it, with the judge if any."""
     started = time.monotonic()
     response: AskResponse | None = None
     error = None
@@ -179,7 +187,15 @@ async def _run_case(case: Case, make_agent: Callable[[Trace], Agent]) -> dict[st
         return result | {"passed": False, "error": error, "checks": {}}
 
     checks = grade(case, response)
+    judge_reason = None
+    if case.judge and judge:
+        try:
+            verdict = await judge.verdict(case, response)
+            checks[Check.JUDGE], judge_reason = verdict.passed, verdict.reason
+        except LLMError as exc:  # a judge outage shouldn't fail the agent
+            judge_reason = f"judge unavailable: {exc}"
     return result | {
+        "judge_reason": judge_reason,
         "passed": all(checks.values()),
         "checks": {check.value: ok for check, ok in checks.items()},
         "failed_checks": [check.value for check, ok in checks.items() if not ok],
@@ -250,6 +266,8 @@ def summarize(results: list[dict[str, Any]]) -> str:
               f"- LLM calls per question: {sum(len(result['models']) for result in results) / len(results):.2f}",
               f"- Questions with an extra (unneeded) tool call: {sum(bool(result.get('extra_tools')) for result in results)}",
               f"- Hard errors: {len(errors)}", ""]
+    lines += _token_lines(results)
+    lines += _judge_lines(results)
 
     lines += ["## Failures", ""]
     for result in results:
@@ -260,8 +278,38 @@ def summarize(results: list[dict[str, Any]]) -> str:
                   f"- tools: {result.get('tools_used')}; searches: {[q['query'] for q in result['search_queries']]}; "
                   f"heroes: {result['hero_lookups']}",
                   f"- sources: {[source['title'] for source in result.get('sources', [])]}",
-                  f"- answer: {(result.get('answer') or '').replace(chr(10), ' ')[:400]}", ""]
+                  f"- answer: {(result.get('answer') or '').replace(chr(10), ' ')[:400]}",
+                  *([f"- judge: {result['judge_reason']}"] if result.get("judge_reason") else []), ""]
     return "\n".join(lines)
+
+
+def _token_lines(results: list[dict[str, Any]]) -> list[str]:
+    """Average tokens per question and the share of prompt tokens served from the provider's cache."""
+    totals = [{key: sum(call[key] for call in result["usage"]) for key in ("prompt", "completion", "cached_prompt")}
+              for result in results if result["usage"]]
+    if not totals:
+        return []
+    prompt = sum(total["prompt"] for total in totals)
+    cached = sum(total["cached_prompt"] for total in totals)
+    return ["## Tokens", "",
+            f"- Per question (avg over {len(totals)}): {prompt / len(totals):.0f} prompt, "
+            f"{sum(total['completion'] for total in totals) / len(totals):.0f} completion",
+            f"- Prompt tokens served from the provider cache: {100 * cached / prompt if prompt else 0:.0f}%", ""]
+
+
+def _judge_lines(results: list[dict[str, Any]]) -> list[str]:
+    """Judge pass rate, and how often it agrees with the keyword checks on the same answer."""
+    judged = [result for result in results if Check.JUDGE.value in result.get("checks", {})]
+    if not judged:
+        return []
+    keyword_checks = (Check.UNKNOWN.value, Check.REFUSAL.value, Check.ANSWER.value)
+    pairs = [(result["checks"][Check.JUDGE.value], result["checks"][check])
+             for result in judged for check in keyword_checks if check in result["checks"]]
+    agree = sum(judge_ok == keyword_ok for judge_ok, keyword_ok in pairs)
+    lines = ["## Judge", "", f"- Passed {sum(result['checks'][Check.JUDGE.value] for result in judged)}/{len(judged)}"]
+    if pairs:
+        lines.append(f"- Agrees with the keyword check on {agree}/{len(pairs)} answers")
+    return lines + [""]
 
 
 def _group_by(results: list[dict[str, Any]], keys_of) -> dict[str, list[bool]]:

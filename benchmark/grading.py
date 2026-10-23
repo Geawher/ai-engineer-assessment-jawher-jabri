@@ -37,6 +37,7 @@ class Check(StrEnum):
     UNKNOWN = "unknown"
     REFUSAL = "refusal"
     FORBIDDEN_TEXT = "forbidden_text"
+    JUDGE = "judge"
 
 
 class Case(BaseModel):
@@ -56,6 +57,8 @@ class Case(BaseModel):
     expect_refusal: bool = False
     expect_unknown: bool = False
     forbidden_text: list[str] = Field(default_factory=list)
+    # Rubric for the LLM judge, for behaviour keywords can't grade (declining, not inventing, correcting a premise).
+    judge: str | None = None
 
 
 def load_cases(path: Path = QUESTIONS_PATH) -> list[Case]:
