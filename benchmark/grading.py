@@ -106,7 +106,9 @@ def grade(case: Case, response: AskResponse) -> dict[Check, bool]:
     if case.expect_unknown:
         results[Check.UNKNOWN] = any(marker in fold(response.answer) for marker in _UNKNOWN_MARKERS)
     if case.expect_refusal:
-        results[Check.REFUSAL] = not used and any(marker in fold(response.answer) for marker in _REFUSAL_MARKERS)
+        # Same tool rule as routing: a lookup the case allows (e.g. checking who Spider-Man is before
+        # declining to give a recipe) doesn't spoil a refusal.
+        results[Check.REFUSAL] = route_ok and any(marker in fold(response.answer) for marker in _REFUSAL_MARKERS)
     if case.forbidden_text:
         results[Check.FORBIDDEN_TEXT] = not any(fold(text) in fold(response.answer) for text in case.forbidden_text)
     return results
