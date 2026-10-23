@@ -1,9 +1,9 @@
 # Mythology & Superhero Bot
 
-A FastAPI service with one endpoint, `POST /ask`, that answers questions about **Norse and Greek mythology**
-(49 Wikipedia articles, stored locally) and **comic-book characters** (the live [Superhero API](https://superheroapi.com)).
-The LLM picks the source, or both ("How does Marvel's Hercules compare to the Greek Heracles?"), and every
-answer lists where its information came from.
+A FastAPI service with one endpoint, `POST /ask`, that answers questions from **document collections**
+(today: 49 Wikipedia articles on Norse and Greek mythology) and **comic-book characters** (the live
+[Superhero API](https://superheroapi.com)). The LLM picks the source, or both ("How does Marvel's Hercules compare
+to the Greek Heracles?"), and every answer lists where its information came from.
 
 ## Setup
 
@@ -30,7 +30,7 @@ curl -s localhost:8000/ask -H 'Content-Type: application/json' \
 ```json
 {
   "answer": "Batman’s intelligence score is 100, and he is published by DC Comics[S2].",
-  "sources": [{"id": "S2", "type": "superhero_api", "title": "Batman (Superhero API #70)", "url": null}],
+  "sources": [{"id": "S2", "type": "superhero_api", "title": "Batman (Superhero API #70)", "url": null, "collection": null}],
   "tools_used": ["get_superhero"],
   "warnings": []
 }
@@ -43,19 +43,42 @@ Interactive docs at http://localhost:8000/docs.
 ```bash
 uv run pytest                                  # unit tests, no keys or network needed
 uv run python -m benchmark.validate            # checks every benchmark answer exists in the data
-uv run python -m benchmark.run                 # 101 live questions, report in benchmark/results/
+uv run python -m benchmark.run                 # 125 live questions, report in benchmark/results/
 ```
 
-The benchmark covers mythology, superhero, "both", out-of-scope and edge cases (misspellings, missing heroes,
-unanswerable questions, a prompt injection). It went from 77/101 to 93/101 as it exposed bugs, and the final
-fixes passed 23 of 24 targeted re-checks.
+125 questions: mythology, superhero, "both", out-of-scope, edge cases and tricky ones (known names with off-topic
+requests, false premises, facts the model knows but the data doesn't, made-up names, prompt injection). An optional
+LLM judge (`JUDGE_*` settings) grades behaviour keywords can't. The report breaks results down by expected behaviour,
+routing, citations, BM25 retrieval quality and token cost.
+
+### Latest results
+
+Same 125 questions and models for both runs (bot `gemini-3.5-flash-lite` with `gpt-oss-20b` fallback, judge
+`qwen3.8-27b`); full reports in `benchmark/results/20261023-*-summary.md`.
+
+| | Before #12–#15 | After |
+|---|---|---|
+| Passed | 120/125 | 118/125 |
+| Declines off-topic / corrects false premises / resists injection | 10/10 · 5/5 · 2/2 | 10/10 · 5/5 · 2/2 |
+| Refuses outside knowledge | 3/4 | 4/4 |
+| Says it doesn't know | 11/13 | 10/13 |
+| BM25: recall@3 on raw questions / hit rate with the model's queries | 90% / 98% | 90% / 98% |
+| Prompt tokens per question | 2,033 | 1,782 |
+
+The "after" run still used 3 passages per search. Two of its failures came from that cut, which has since been
+reverted (both answers re-checked correct). On `gpt-oss-120b`, the cross-source hints made "Who is Loki?" consult
+both sources, a question whose routing used to vary between runs.
 
 ## Design in brief
 
-- **Routing**: the LLM gets two tools, `search_mythology` and `get_superhero`, in a hand-written loop (`app/agent.py`).
-- **Retrieval**: BM25 over section-level chunks, behind a `Retriever` interface so embeddings can be added later.
+- **Routing**: the LLM gets two tools, `search_documents` and `get_superhero`, in a hand-written loop (`app/agent.py`).
+  When a name it asked one source about also exists in the other (Loki the god and the Marvel character), the tool
+  result says so and the model decides whether to check both. No list of names is hardcoded.
+- **Documents**: every folder under `data/` with a `collection.json` (a one-line description) is a collection. Adding
+  a dataset needs no code change. BM25 over section-level chunks, behind a `Retriever` interface for embeddings later.
 - **Sources**: tool results are labelled `[S1]`, `[S2]`…; only ids the server issued reach the response, so the model
-  can't invent a source. Answers given without tools are attributed to `llm`.
+  can't invent a source. Paragraphs left uncited get one repair turn, and any still uncited are flagged in
+  `warnings`. Answers given without tools are attributed to `llm`.
 - **Resilience**: an optional fallback LLM. On a rate limit or outage the whole question restarts there, because one
   provider's tool-call history is not valid input for another.
 
@@ -69,3 +92,4 @@ fixes passed 23 of 24 targeted re-checks.
 ## Data
 
 `data/mythology/` holds Wikipedia articles (CC BY-SA 4.0), fetched with `scripts/fetch_mythology.py`.
+To add a collection, create `data/<name>/` with markdown articles in the same format and a `collection.json`.
