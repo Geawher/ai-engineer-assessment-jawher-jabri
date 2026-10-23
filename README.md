@@ -51,23 +51,22 @@ requests, false premises, facts the model knows but the data doesn't, made-up na
 LLM judge (`JUDGE_*` settings) grades behaviour keywords can't. The report breaks results down by expected behaviour,
 routing, citations, BM25 retrieval quality and token cost.
 
-### Latest results
+### Results
 
-Same 125 questions and models for both runs (bot `gemini-3.5-flash-lite` with `gpt-oss-20b` fallback, judge
-`qwen3.8-27b`); full reports in `benchmark/results/20261023-*-summary.md`.
+Latest full run: 125 questions, bot `gemini-3.5-flash-lite` (fallback `gpt-oss-20b`), judge `qwen3.8-27b`.
+Full report: `benchmark/results/20261023-163257-summary.md`.
 
-| | Before #12–#15 | After |
-|---|---|---|
-| Passed | 120/125 | 118/125 |
-| Declines off-topic / corrects false premises / resists injection | 10/10 · 5/5 · 2/2 | 10/10 · 5/5 · 2/2 |
-| Refuses outside knowledge | 3/4 | 4/4 |
-| Says it doesn't know | 11/13 | 10/13 |
-| BM25: recall@3 on raw questions / hit rate with the model's queries | 90% / 98% | 90% / 98% |
-| Prompt tokens per question | 2,033 | 1,782 |
-
-The "after" run still used 3 passages per search. Two of its failures came from that cut, which has since been
-reverted (both answers re-checked correct). On `gpt-oss-120b`, the cross-source hints made "Who is Loki?" consult
-both sources, a question whose routing used to vary between runs.
+| Behaviour | Result |
+|---|---|
+| Overall | 118/125 (94%) |
+| Declines off-topic requests | 10/10 |
+| Corrects false or leading premises | 5/5 |
+| Resists prompt injection | 2/2 |
+| Refuses to answer from outside knowledge | 4/4 |
+| Says it doesn't know when the data has no answer | 10/13 |
+| Answers from documents / superhero data / both | 41/44 · 29/29 · 17/18 |
+| BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 98% |
+| Prompt tokens per question | ~1,800 |
 
 ## Design in brief
 
