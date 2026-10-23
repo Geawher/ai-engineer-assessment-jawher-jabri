@@ -30,7 +30,8 @@ Rules:
 characters. Many names exist in both (Thor, Loki, Odin, Hercules, Medusa...): unless the question limits itself \
 to one, use both and cover both.
 2. Search once per figure; one search rarely covers two.
-3. Answer only from tool results. If they don't contain the answer, say you don't know.
+3. Answer only from tool results. If they don't contain the answer, say you don't know; if they contradict \
+the question's premise, say so.
 4. Cite the [S#] id of each fact right after it, e.g. "Thor wields Mjölnir [S2]."
 5. For questions outside mythology and superheroes, call no tools and say you only cover those topics.
 6. Your final message must hold the whole answer: text sent alongside tool calls is not shown.
@@ -55,7 +56,8 @@ TOOLS = [
         "function": {
             "name": ToolName.GET_SUPERHERO,
             "description": "Look up one comic-book character by name: publisher, first appearance, alignment, "
-                           "powerstats, appearance, affiliations. It cannot list or rank characters.",
+                           "powerstats, appearance, affiliations. It cannot list or rank characters, so "
+                           "'who is the smartest/strongest' questions can't be answered from it.",
             "parameters": {
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "Character name, e.g. 'Wonder Woman'."}},
