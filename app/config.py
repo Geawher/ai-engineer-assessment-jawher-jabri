@@ -48,8 +48,9 @@ class Settings(BaseSettings):
     superhero_cache_ttl_seconds: int = 3600
 
     data_dir: Path = Path("data/mythology")
-    # 3, not 4: in every benchmark question the expected article was already in the model's top 3.
-    retrieval_top_k: int = 3
+    # 4, not 3: the right *article* was always in the top 3, but the passage holding the answer sometimes
+    # ranked 4th ("Baldr killed": the mistletoe passages were #4 and #5), which cost answers in the benchmark.
+    retrieval_top_k: int = 4
     max_tool_rounds: int = 3
 
     @field_validator("llm_fallback_base_url", "llm_fallback_api_key", "llm_fallback_model", mode="before")
