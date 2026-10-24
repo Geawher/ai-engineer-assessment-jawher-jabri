@@ -2,47 +2,88 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
-from typing import Any
+from enum import StrEnum
+from typing import Any, NamedTuple
 
 from app.agent import ToolName
+from app.config import Settings
 from app.schemas import SourceType
 from benchmark.grading import Case, Check, fold
 
 RECALL_DEPTHS = (1, 3, 4, 10)
+TOP_K = Settings.model_fields["retrieval_top_k"].default  # passages per search the service returns
 Result = dict[str, Any]
 
+
+class Tag(StrEnum):
+    """Question tags (in questions.jsonl) that decide a case's expected behaviour."""
+
+    PROMPT_INJECTION = "prompt-injection"
+    OFF_TOPIC_ENTITY = "off-topic-entity"
+    FALSE_PREMISE = "false-premise"
+    LEADING = "leading"
+    OUTSIDE_KNOWLEDGE = "outside-knowledge"
+    GROUNDING = "grounding"
+    UNANSWERABLE = "unanswerable"
+    NONEXISTENT = "nonexistent"
+    MISSING_HERO = "missing-hero"
+    NUMBER_BAIT = "number-bait"
+    AGGREGATE = "aggregate"
+
+
+class SourceSet(StrEnum):
+    """Which sources a question needed or used, for the routing table."""
+
+    DOCUMENTS = "documents"
+    SUPERHERO = "superhero"
+    BOTH = "both"
+    NONE = "none"
+
+
+class Behaviour(NamedTuple):
+    label: str
+    meaning: str
+    holds_back: bool  # passing means NOT producing something (declining, "I don't know", resisting)
+    applies: Callable[[Case], bool]
+
+
+def _tagged(case: Case, *tags: Tag) -> bool:
+    """Whether the case has any of these tags."""
+    return bool(set(tags) & set(case.tags))
+
+
 # Expected behaviour, decided from each case's expectations and tags. Order matters: the first match wins,
-# so a prompt injection about Thor counts as "resist injection", not "answer from mythology".
-BEHAVIOURS: list[tuple[str, str, Callable[[Case], bool]]] = [
-    ("Resist prompt injection", "answers the real question (if any) and reveals nothing",
-     lambda case: "prompt-injection" in case.tags),
-    ("Decline off-topic requests", "declines without making anything up",
-     lambda case: case.expect_refusal or "off-topic-entity" in case.tags),
-    ("Correct false or leading premises", "contradicts the premise from the sources",
-     lambda case: bool({"false-premise", "leading"} & set(case.tags))),
-    ("Refuse outside knowledge", "says the sources don't cover it instead of using what the model knows",
-     lambda case: bool({"outside-knowledge", "grounding"} & set(case.tags))),
-    ("Say it doesn't know", "says the sources don't contain the answer instead of inventing one",
-     lambda case: case.expect_unknown or bool({"unanswerable", "nonexistent", "missing-hero", "number-bait",
-                                                "aggregate"} & set(case.tags))),
-    ("Answer from both sources", "correct answer citing a document passage and the superhero data",
-     lambda case: set(case.expected_tools) == {ToolName.SEARCH_DOCUMENTS, ToolName.GET_SUPERHERO}),
-    ("Answer from superhero data", "correct answer citing the superhero data",
-     lambda case: case.expected_tools == [ToolName.GET_SUPERHERO]),
-    ("Answer from documents", "correct answer citing the right document passage",
-     lambda case: case.expected_tools == [ToolName.SEARCH_DOCUMENTS]),
+# so a prompt injection about Thor counts as "resist injection", not "answer from documents".
+BEHAVIOURS = [
+    Behaviour("Resist prompt injection", "answers the real question (if any) and reveals nothing", True,
+              lambda case: _tagged(case, Tag.PROMPT_INJECTION)),
+    Behaviour("Decline off-topic requests", "declines without making anything up", True,
+              lambda case: case.expect_refusal or _tagged(case, Tag.OFF_TOPIC_ENTITY)),
+    Behaviour("Correct false or leading premises", "contradicts the premise from the sources", True,
+              lambda case: _tagged(case, Tag.FALSE_PREMISE, Tag.LEADING)),
+    Behaviour("Refuse outside knowledge", "says the sources don't cover it instead of using what the model knows", True,
+              lambda case: _tagged(case, Tag.OUTSIDE_KNOWLEDGE, Tag.GROUNDING)),
+    Behaviour("Say it doesn't know", "says the sources don't contain the answer instead of inventing one", True,
+              lambda case: case.expect_unknown or _tagged(case, Tag.UNANSWERABLE, Tag.NONEXISTENT, Tag.MISSING_HERO,
+                                                          Tag.NUMBER_BAIT, Tag.AGGREGATE)),
+    Behaviour("Answer from both sources", "correct answer citing a document passage and the superhero data", False,
+              lambda case: set(case.expected_tools) == {ToolName.SEARCH_DOCUMENTS, ToolName.GET_SUPERHERO}),
+    Behaviour("Answer from superhero data", "correct answer citing the superhero data", False,
+              lambda case: case.expected_tools == [ToolName.GET_SUPERHERO]),
+    Behaviour("Answer from documents", "correct answer citing the right document passage", False,
+              lambda case: case.expected_tools == [ToolName.SEARCH_DOCUMENTS]),
 ]
-# Behaviours where a failure means the bot produced content it shouldn't have.
-_SHOULD_HOLD_BACK = {"Decline off-topic requests", "Correct false or leading premises", "Refuse outside knowledge",
-                     "Say it doesn't know", "Resist prompt injection"}
+# Checks whose failure means the bot said something it shouldn't have (as opposed to, say, a routing miss).
+_CONTENT_CHECKS = {Check.ANSWER, Check.UNKNOWN, Check.REFUSAL, Check.FORBIDDEN_TEXT, Check.JUDGE}
 
 
 def behaviour(case: Case) -> str:
     """The behaviour a case tests (see BEHAVIOURS)."""
-    return next((label for label, _, applies in BEHAVIOURS if applies(case)), "Other")
+    return next((item.label for item in BEHAVIOURS if item.applies(case)), "Other")
 
 
 def summarize(results: list[Result], cases: dict[str, Case], article_titles: set[str],
@@ -73,9 +114,9 @@ def summarize(results: list[Result], cases: dict[str, Case], article_titles: set
 def summarize_retrieval(rows: list[Result]) -> str:
     """A standalone report for --retrieval-only runs."""
     return "\n".join([f"# BM25 retrieval on raw questions ({len(rows)} questions)", "",
-                      *_raw_retrieval_table(rows), "", "## Not in the top 4", "",
+                      *_raw_retrieval_table(rows), "", f"## Not in the top {TOP_K}", "",
                       *[f"- {row['id']} rank={row['rank']}: {row['question']} -> top 3 {row['top3']}"
-                        for row in rows if row["rank"] is None or row["rank"] > 4]])
+                        for row in rows if row["rank"] is None or row["rank"] > TOP_K]])
 
 
 def _headline(results: list[Result]) -> list[str]:
@@ -86,37 +127,41 @@ def _headline(results: list[Result]) -> list[str]:
 
 
 def _behaviour_lines(results: list[Result], cases: dict[str, Case]) -> list[str]:
-    """Pass rate per expected behaviour, plus how often the bot invented content it should have held back."""
+    """Pass rate per expected behaviour, plus how often the bot said something it should have held back."""
     groups: dict[str, list[bool]] = defaultdict(list)
+    holding_back: list[Result] = []
+    holds_back = {item.label for item in BEHAVIOURS if item.holds_back}
     for result in results:
-        groups[behaviour(cases[result["id"]])].append(result["passed"])
-    meanings = {label: meaning for label, meaning, _ in BEHAVIOURS}
+        label = behaviour(cases[result["id"]])
+        groups[label].append(result["passed"])
+        if label in holds_back:
+            holding_back.append(result)
     lines = ["## By expected behaviour", "", "| Behaviour | Behaved correctly | Rate | Passing means |", "|---|---|---|---|"]
-    lines += [f"| {label} | {sum(oks)}/{len(oks)} | {_percent(oks)} | {meanings.get(label, '')} |"
-              for label, _, _ in BEHAVIOURS if (oks := groups.get(label))]
-    held_back = [ok for label, oks in groups.items() if label in _SHOULD_HOLD_BACK for ok in oks]
-    if held_back:
-        invented = len(held_back) - sum(held_back)
+    lines += [f"| {item.label} | {sum(oks)}/{len(oks)} | {_percent(oks)} | {item.meaning} |"
+              for item in BEHAVIOURS if (oks := groups.get(item.label))]
+    if holding_back:
+        said_too_much = sum(bool(_CONTENT_CHECKS & set(result.get("failed_checks", []))) for result in holding_back)
         lines += ["", f"When it should have declined, said it doesn't know, or resisted a premise or injection, "
-                      f"it failed to {invented}/{len(held_back)} times ({100 * invented / len(held_back):.0f}%)."]
+                      f"it said something it shouldn't have {said_too_much}/{len(holding_back)} times "
+                      f"({100 * said_too_much / len(holding_back):.0f}%)."]
     return lines + [""]
 
 
-def _source_set(tools: Iterable[str]) -> str:
-    """A readable name for a set of tools."""
+def _source_set(tools: Iterable[str]) -> SourceSet:
+    """Which sources a set of tools covers."""
     tools = set(tools)
     if {ToolName.SEARCH_DOCUMENTS, ToolName.GET_SUPERHERO} <= tools:
-        return "both"
+        return SourceSet.BOTH
     if ToolName.SEARCH_DOCUMENTS in tools:
-        return "documents"
+        return SourceSet.DOCUMENTS
     if ToolName.GET_SUPERHERO in tools:
-        return "superhero"
-    return "none"
+        return SourceSet.SUPERHERO
+    return SourceSet.NONE
 
 
 def _routing_lines(results: list[Result], cases: dict[str, Case]) -> list[str]:
     """Which sources each question needed (rows) against which it used (columns)."""
-    columns = ["documents", "superhero", "both", "none"]
+    columns = list(SourceSet)
     matrix: dict[str, Counter] = defaultdict(Counter)
     for result in results:
         if result.get("error"):
@@ -202,10 +247,12 @@ def _check_lines(results: list[Result]) -> list[str]:
 
 def _cost_lines(results: list[Result]) -> list[str]:
     """Latency, provider usage, retries and tokens."""
+    if not results:
+        return []
     latencies = sorted(result["latency_seconds"] for result in results)
     models = Counter(model for result in results for model in result["models"])
     lines = ["## Cost and latency", "",
-             f"- Latency: p50 {statistics.median(latencies):.1f}s, p95 {latencies[int(len(latencies) * 0.95) - 1]:.1f}s, "
+             f"- Latency: p50 {statistics.median(latencies):.1f}s, p95 {latencies[math.ceil(len(latencies) * 0.95) - 1]:.1f}s, "
              f"max {latencies[-1]:.1f}s",
              f"- LLM calls per question: {sum(len(result['models']) for result in results) / len(results):.2f}; "
              f"by model: {dict(models)}",
