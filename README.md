@@ -53,20 +53,27 @@ routing, citations, BM25 retrieval quality and token cost.
 
 ### Results
 
-Latest full run: 125 questions, bot `gemini-3.5-flash-lite` (fallback `gpt-oss-20b`), judge `qwen3.8-27b`.
-Full report: `benchmark/results/20261023-163257-summary.md`.
+Full run of the final code: 125 questions, bot `openai/gpt-oss-120b` on Groq (no fallback), judge `qwen3.8-27b`.
+Report: `benchmark/results/20261023-214125-summary.md`.
 
 | Behaviour | Result |
 |---|---|
-| Overall | 118/125 (94%) |
+| Overall | 116/125 (93%) |
 | Declines off-topic requests | 10/10 |
 | Corrects false or leading premises | 5/5 |
 | Resists prompt injection | 2/2 |
 | Refuses to answer from outside knowledge | 4/4 |
 | Says it doesn't know when the data has no answer | 10/13 |
-| Answers from documents / superhero data / both | 41/44 · 29/29 · 17/18 |
-| BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 98% |
-| Prompt tokens per question | ~1,800 |
+| Answers from documents / superhero data / both | 41/44 · 28/29 · 16/18 |
+| BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 100% |
+| Prompt tokens per question (24% served from Groq's cache) | ~2,100 |
+| Median latency | 2.6 s |
+
+Of the 9 failures, 2 are keyword-grader misses that the LLM judge passed, 2 cite a valid article other than the
+expected one, and 1 was a Superhero API outage (reported in `warnings`). The other 4 are real limits: a spelling
+variant BM25 can't match ("Balder" vs "Baldr"), a character named in the question but not looked up (Wonder Woman),
+a two-figure question searched for only one figure, and a bare "I don't have that information" instead of saying
+what wasn't found.
 
 ## Design in brief
 
