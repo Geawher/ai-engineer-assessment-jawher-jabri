@@ -59,6 +59,7 @@ class Trace:
     llm_seconds: list[float] = field(default_factory=list)
     rate_limit_waits: list[float] = field(default_factory=list)
     call_attempts: list[int] = field(default_factory=list)  # provider attempt each call belonged to
+    turn_tool_calls: list[int] = field(default_factory=list)  # tool calls each turn asked for (0: an answer)
     provider_attempts: int = 0
 
     def start_attempt(self) -> None:
@@ -125,6 +126,7 @@ class RecordingLLM:
                 self.trace.llm_seconds.append(round(time.monotonic() - started, 2))
                 self.trace.rate_limit_waits.append(turn.waited_seconds)
                 self.trace.call_attempts.append(self.trace.provider_attempts)
+                self.trace.turn_tool_calls.append(len(turn.tool_calls))
                 self.trace.models.append(turn.model)
                 self.trace.usage.append(asdict(turn.usage))
                 return turn
