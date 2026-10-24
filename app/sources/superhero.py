@@ -67,7 +67,8 @@ class SuperheroClient:
         """Search heroes by name (case-insensitive substring match).
 
         Returns:
-            Up to MAX_RESULTS heroes, exact name matches first; [] when nothing matches.
+            Up to MAX_RESULTS heroes: only exact name matches if any exist, else whole-word matches;
+            [] when nothing matches.
 
         Raises:
             SuperheroAPIError: On network errors, bad responses, or API-level errors such as an invalid token.

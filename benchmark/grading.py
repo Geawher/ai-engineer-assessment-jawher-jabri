@@ -25,6 +25,7 @@ _UNKNOWN_MARKERS = (
     "isn't mentioned", "is not mentioned", "no details", "not included", "only answer", "doesn't say",
     "does not say", "no evidence", "not listed", "there is no", "not known", "unknown", "not aware",
     "no account", "do not give", "does not give", "doesn't give", "don't give", "not recorded",
+    "no exact", "doesn't include", "does not include", "not given",
 )
 # A refusal either names the bot's scope or declines outright (e.g. to a prompt injection).
 _REFUSAL_MARKERS = ("mytholog", "superhero", "comic", "can't", "cannot", "won't", "unable", "sorry")
@@ -88,8 +89,14 @@ def contains_all_groups(text: str, groups: list[list[str]]) -> bool:
     return all(any(fold(alternative) in folded for alternative in group) for group in groups)
 
 
-def grade(case: Case, response: AskResponse) -> dict[Check, bool]:
+def grade(case: Case, response: AskResponse, passage_texts: dict[str, str] | None = None) -> dict[Check, bool]:
     """Run every check that applies to the case.
+
+    Args:
+        case: The question and its expectations.
+        response: The agent's answer.
+        passage_texts: Text of each document passage by source title ("Thor — Introduction"), so a cited
+            passage that contains the answer counts even if it isn't one of the expected articles.
 
     Returns:
         Check -> passed, containing only the checks relevant to this case.
@@ -105,7 +112,7 @@ def grade(case: Case, response: AskResponse) -> dict[Check, bool]:
     if case.answer_keywords:
         results[Check.ANSWER] = contains_all_groups(response.answer, case.answer_keywords)
     if case.expected_sources or case.expected_source_types:
-        results[Check.SOURCES] = _sources_match(case, response)
+        results[Check.SOURCES] = _sources_match(case, response, passage_texts or {})
     if case.expect_unknown:
         results[Check.UNKNOWN] = any(marker in fold(response.answer) for marker in _UNKNOWN_MARKERS)
     if case.expect_refusal:
@@ -122,9 +129,15 @@ def extra_tools(case: Case, response: AskResponse) -> list[str]:
     return sorted(set(response.tools_used) - set(case.expected_tools) - set(case.optional_tools))
 
 
-def _sources_match(case: Case, response: AskResponse) -> bool:
-    """Every expected source group is cited, and every expected source type is present."""
+def _sources_match(case: Case, response: AskResponse, passage_texts: dict[str, str]) -> bool:
+    """The right sources are cited and every expected source type is present.
+
+    "Right" means each expected source group is cited, or the cited passages themselves contain every
+    answer keyword group: a passage that holds the answer is a correct citation, whichever article it's from.
+    """
     subjects = [fold(source_subject(source.title)) for source in response.sources]
     groups_ok = all(any(fold(name) in subjects for name in group) for group in case.expected_sources)
+    cited_text = " ".join(passage_texts.get(source.title, "") for source in response.sources)
+    answer_cited = bool(case.answer_keywords) and contains_all_groups(cited_text, case.answer_keywords)
     types_ok = set(case.expected_source_types) <= {source.type.value for source in response.sources}
-    return groups_ok and types_ok
+    return (groups_ok or answer_cited) and types_ok

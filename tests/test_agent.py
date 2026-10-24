@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import httpx
+import openai
 import pytest
 
 from app.agent import DUPLICATE_CALL, Agent, ToolName, uncited_sentences
 from app.llm import AssistantTurn, ToolCall
+from app.retrieval.base import Chunk
 from app.retrieval.bm25 import BM25Retriever
 from app.schemas import SourceType
+from app.sources.superhero import Hero
 from app.retrieval.titles import TitleIndex
 from tests.conftest import CHUNKS, COLLECTIONS, THOR_HERO, FakeSuperheroes, ScriptedLLM, answer_turn, tool_turn
 
@@ -217,12 +221,12 @@ class TestCitationRepair:
     def test_paragraph_with_a_citation_counts_as_cited(self):
         """One citation closing a paragraph sources the whole paragraph."""
         answer = "Thor is the Norse god of thunder. He rides a chariot pulled by two goats [S1]."
-        assert uncited_sentences(answer) == []
+        assert uncited_sentences(answer, {"S1"}) == []
 
     def test_uncited_factual_paragraph_is_flagged(self):
         """A paragraph of claims with no [S#] anywhere is flagged sentence by sentence."""
         answer = "Odin is the father of Thor [S1].\n\nBoth figures are associated with storms and with kingship in later stories."
-        assert uncited_sentences(answer) == ["Both figures are associated with storms and with kingship in later stories."]
+        assert uncited_sentences(answer, {"S1"}) == ["Both figures are associated with storms and with kingship in later stories."]
 
     @pytest.mark.parametrize("answer", [
         "## In the comics:",
@@ -233,7 +237,7 @@ class TestCitationRepair:
     ])
     def test_non_factual_lines_are_not_flagged(self, answer):
         """Headings, short fragments and "not in the sources" statements have nothing to cite."""
-        assert uncited_sentences(answer) == []
+        assert uncited_sentences(answer, {"S1"}) == []
 
     async def test_uncited_answer_gets_one_repair_turn(self, retriever):
         """An uncited claim triggers one repair call, whose answer replaces the original."""
@@ -257,7 +261,99 @@ class TestCitationRepair:
         assert response.warnings == ["1 statement(s) in the answer are not linked to a source."]
 
     async def test_no_repair_without_sources(self, retriever):
-        """Answers given without tools (refusals) never trigger a repair."""
-        llm = ScriptedLLM([answer_turn("Paris is a lovely city but I only cover mythology and superheroes.")])
+        """An uncited factual answer given without tools never triggers a repair (there is nothing to cite)."""
+        llm = ScriptedLLM([answer_turn("Paris is the capital and largest city of France by population.")])
         await make_agent(llm, retriever).ask("What is the capital of France?")
         assert len(llm.calls) == 1
+
+    async def test_repair_call_failure_keeps_the_original_answer(self, retriever):
+        """A failing repair call (rate limit here) neither fails the request nor restarts it."""
+        claim = "Odin is a widely revered god associated with wisdom and healing."
+        llm = FailingRepairLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Odin"})), answer_turn(claim)])
+        response = await make_agent(llm, retriever).ask("Who is Odin?")
+        assert response.answer == claim
+        assert response.warnings == ["1 statement(s) in the answer are not linked to a source."]
+
+    async def test_repair_that_is_not_better_is_discarded(self, retriever):
+        """A repaired answer with as many uncited sentences as before doesn't replace the original."""
+        claim = "Odin is a widely revered god associated with wisdom and healing."
+        worse = "Odin is a god of many things in the old northern stories of the region."
+        llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Odin"})), answer_turn(claim), answer_turn(worse)])
+        response = await make_agent(llm, retriever).ask("Who is Odin?")
+        assert response.answer == claim
+
+    async def test_repair_turn_message_order(self, retriever):
+        """Exactly one repair call, appended as assistant answer then user instruction after the tool messages."""
+        claim = "Odin is a widely revered god associated with wisdom and healing."
+        llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Odin"})), answer_turn(claim),
+                           answer_turn(claim[:-1] + " [S1].")])
+        await make_agent(llm, retriever).ask("Who is Odin?")
+        assert len(llm.calls) == 3
+        roles = [message["role"] for message in llm.calls[-1]["messages"]]
+        assert roles[-4:] == ["assistant", "tool", "assistant", "user"]
+
+    @pytest.mark.parametrize(("answer", "flagged"), [
+        ("I don’t know who that is, the sources say nothing.", False),                 # curly apostrophe
+        ("Superhero data could not be retrieved right now, sorry about that.", False),  # outage notice
+        ("## Thor in Norse mythology and in Marvel comics", False),                     # long heading
+        ("Achilles cannot be harmed anywhere except at his heel.", True),               # claim, not a refusal
+        ("There is no god more feared than Fenrir in the whole of Asgard.", True),
+        ("Odin is wise and rules over Asgard from his high seat [S9].", True),          # S9 was never issued
+    ])
+    def test_detector_edge_cases_from_review(self, answer, flagged):
+        """Refusal-like wording is only skipped when it is about the sources or the speaker."""
+        assert bool(uncited_sentences(answer, {"S1"})) is flagged
+
+    def test_sentences_split_before_non_ascii_capitals(self):
+        """A sentence starting with "Æsir" is split from the one before it."""
+        answer = "Odin rules the gods of the north from Asgard. Æsir and Vanir once fought a long war together."
+        assert len(uncited_sentences(answer, set())) == 2
+
+
+
+async def test_hint_uses_the_alias_that_matched(retriever):
+    """Searching "Ajax" (article "Ajax the Great") checks the superhero database for "Ajax", not the full title."""
+    chunks = [Chunk("ajax:0", "mythology", "Ajax the Great", "Introduction", "https://x/Ajax", "Ajax fought at Troy.")]
+    ajax = Hero(id="13", name="Ajax", profile={"name": "Ajax"})
+    llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Ajax Trojan war"})), answer_turn("...")])
+    agent = Agent(llm, BM25Retriever(chunks), FakeSuperheroes({"ajax": [ajax]}), collections=COLLECTIONS,
+                  titles=TitleIndex(chunks))
+    await agent.ask("Who is Ajax?")
+    assert "'Ajax' also exist(s) in the superhero database" in llm.calls[1]["messages"][-1]["content"]
+
+
+class EmptyRetriever:
+    """Retriever that never finds anything (e.g. a collection filter that excludes every match)."""
+
+    def search(self, query: str, k: int, collection: str | None = None) -> list[Chunk]:
+        """Return no passages."""
+        return []
+
+
+async def test_empty_search_still_says_so_when_a_hint_is_added(retriever):
+    """No passages plus a hint: the model is told the search was empty, then gets the hint."""
+    llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Thor xyzzy"})), answer_turn("...")])
+    agent = Agent(llm, EmptyRetriever(), FakeSuperheroes({"thor": [THOR_HERO]}), collections=COLLECTIONS,
+                  titles=TitleIndex(CHUNKS))
+    await agent.ask("Thor xyzzy?")
+    result = llm.calls[1]["messages"][-1]["content"]
+    assert result.startswith("No matching passages found.") and "Note:" in result
+
+
+async def test_unknown_tools_are_not_reported_as_used(retriever):
+    """A model calling a tool that doesn't exist gets an error, and the tool isn't listed in tools_used."""
+    llm = ScriptedLLM([tool_turn(("search_mythology", {"query": "Thor"})), answer_turn("I could not search.")])
+    response = await make_agent(llm, retriever).ask("Who is Thor?")
+    assert response.tools_used == []
+    assert llm.calls[1]["messages"][-1]["content"] == "ERROR: unknown tool search_mythology"
+
+
+class FailingRepairLLM(ScriptedLLM):
+    """Scripted LLM whose call after the scripted turns raises a rate limit, like a provider during the repair turn."""
+
+    async def complete(self, messages, tools=None, tool_choice="auto"):
+        """Return scripted turns, then fail."""
+        if not self._turns:
+            raise openai.RateLimitError("slow down", response=httpx.Response(429, request=httpx.Request("POST", "http://x")),
+                                        body=None)
+        return await super().complete(messages, tools=tools, tool_choice=tool_choice)
