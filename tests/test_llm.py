@@ -152,6 +152,7 @@ async def test_short_rate_limit_is_waited_out_on_the_same_provider():
                     temperature=0, max_rate_limit_wait=1)
     turn = await llm.complete(_MESSAGES)
     assert (turn.content, primary.calls, fallback.calls) == ("after waiting", 2, 0)
+    assert turn.waited_seconds == 0.01  # reported, so the benchmark can tell waiting from working
 
 
 async def test_long_rate_limit_fails_over_immediately():

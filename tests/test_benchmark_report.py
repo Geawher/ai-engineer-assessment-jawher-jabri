@@ -104,3 +104,15 @@ async def test_regrade_drops_judge_verdicts_for_removed_rubrics():
            "checks": {"route": True, "judge": False}}
     await regrade([row], {"q": case}, {}, set())
     assert row["passed"] and "judge" not in row["checks"]
+
+
+def test_work_time_takes_rate_limit_and_retry_waits_out_of_latency():
+    """A question that waited 8s on a rate limit and 20s on a benchmark retry worked for 2s, 1.5s of it in the LLM."""
+    from benchmark.report import _work_time_lines
+
+    result = {"latency_seconds": 30.0, "rate_limit_waits": [0.0, 8.0], "llm_seconds": [0.5, 9.0],
+              "benchmark_wait_seconds": 20.0}
+    lines = _work_time_lines([result])
+    assert lines[0].startswith("- Latency without rate-limit waits: p50 2.0s") and "75% of it" in lines[0]
+    assert lines[1] == "- Rate-limit waits: 1 questions, 28s in total"
+    assert _work_time_lines([{"latency_seconds": 3.0}]) == []  # results recorded before timing existed
