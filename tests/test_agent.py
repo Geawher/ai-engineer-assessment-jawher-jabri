@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from app.agent import DUPLICATE_CALL, Agent, ToolName
+import pytest
+
+from app.agent import DUPLICATE_CALL, Agent, ToolName, uncited_sentences
 from app.llm import AssistantTurn, ToolCall
 from app.retrieval.bm25 import BM25Retriever
 from app.schemas import SourceType
@@ -169,3 +171,53 @@ async def test_missing_hero_points_the_model_to_mythology(retriever):
     llm = ScriptedLLM([tool_turn((ToolName.GET_SUPERHERO, {"name": "Achilles"})), answer_turn("...")])
     await make_agent(llm, retriever).ask("What was Achilles' weak spot?")
     assert ToolName.SEARCH_MYTHOLOGY in llm.calls[1]["messages"][-1]["content"]
+
+
+class TestCitationRepair:
+    def test_paragraph_with_a_citation_counts_as_cited(self):
+        """One citation closing a paragraph sources the whole paragraph."""
+        answer = "Thor is the Norse god of thunder. He rides a chariot pulled by two goats [S1]."
+        assert uncited_sentences(answer) == []
+
+    def test_uncited_factual_paragraph_is_flagged(self):
+        """A paragraph of claims with no [S#] anywhere is flagged sentence by sentence."""
+        answer = "Odin is the father of Thor [S1].\n\nBoth figures are associated with storms and with kingship in later stories."
+        assert uncited_sentences(answer) == ["Both figures are associated with storms and with kingship in later stories."]
+
+    @pytest.mark.parametrize("answer", [
+        "## In the comics:",
+        "Yes, he does.",
+        "The sources don't mention Zeus's favourite food at all.",
+        "No comic-book character named \"Apollo\" was found in the database.",
+        "I can only answer questions about mythology and superheroes.",
+    ])
+    def test_non_factual_lines_are_not_flagged(self, answer):
+        """Headings, short fragments and "not in the sources" statements have nothing to cite."""
+        assert uncited_sentences(answer) == []
+
+    async def test_uncited_answer_gets_one_repair_turn(self, retriever):
+        """An uncited claim triggers one repair call, whose answer replaces the original."""
+        llm = ScriptedLLM([
+            tool_turn((ToolName.SEARCH_MYTHOLOGY, {"query": "Odin"})),
+            answer_turn("Odin is a widely revered god associated with wisdom and healing."),
+            answer_turn("Odin is a widely revered god associated with wisdom and healing [S1]."),
+        ])
+        response = await make_agent(llm, retriever).ask("Who is Odin?")
+
+        assert response.answer.endswith("[S1].")
+        assert "no [S#] citation" in llm.calls[-1]["messages"][-1]["content"]
+        assert llm.calls[-1]["tool_choice"] == "none"
+        assert response.warnings == []
+
+    async def test_still_uncited_after_repair_is_flagged(self, retriever):
+        """If the repair doesn't add citations, the response says so in warnings."""
+        claim = "Odin is a widely revered god associated with wisdom and healing."
+        llm = ScriptedLLM([tool_turn((ToolName.SEARCH_MYTHOLOGY, {"query": "Odin"})), answer_turn(claim), answer_turn(claim)])
+        response = await make_agent(llm, retriever).ask("Who is Odin?")
+        assert response.warnings == ["1 statement(s) in the answer are not linked to a source."]
+
+    async def test_no_repair_without_sources(self, retriever):
+        """Answers given without tools (refusals) never trigger a repair."""
+        llm = ScriptedLLM([answer_turn("Paris is a lovely city but I only cover mythology and superheroes.")])
+        await make_agent(llm, retriever).ask("What is the capital of France?")
+        assert len(llm.calls) == 1

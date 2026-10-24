@@ -69,12 +69,29 @@ TOOLS = [
 
 NO_ANSWER = "Sorry, I couldn't produce an answer."
 TOOL_BUDGET_EXHAUSTED = "ERROR: tool budget exhausted."
+CITATION_REPAIR = """\
+These sentences in your answer have no [S#] citation:
+{sentences}
+
+Rewrite the answer so every factual sentence cites the [S#] id(s) of the tool result it comes from, \
+and remove any statement no tool result supports. Keep everything else unchanged. \
+Reply with the full corrected answer only."""
 DUPLICATE_CALL = "You already made this exact call; its result is above. Use it, or try a different query or tool."
 SUPERHERO_UNAVAILABLE = "ERROR: the Superhero API is unavailable right now. Tell the user superhero data could not be retrieved."
 _CITATION_RE = re.compile(r"\bS\d+\b")
 # Models drift from the requested [S1] form, e.g. gpt-oss writes 【S1】, 【S5†L9-L12】 or [ S1 ].
 _LOOSE_CITATION_RE = re.compile(r"[【\[]\s*(S\d+)(?:†[^】\]]*)?\s*[】\]]")
 # Invisible or typographic characters some models emit; they break copy-paste and string matching.
+# Splitting an answer into checkable sentences: markdown list/heading markers, then sentence ends.
+_MARKDOWN_PREFIX_RE = re.compile(r"^\s*(?:#+|[-*•]|\d+[.)])\s*")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z*])")
+# Sentences saying the sources don't cover something have nothing to cite.
+_NO_ANSWER_RE = re.compile(r"don't know|do not know|not (?:found|mentioned|available|specified|provided|listed)|"
+                           r"no (?:information|record|data|mention|details)|(?:don't|do not|doesn't|does not) "
+                           r"(?:contain|mention|say|give|provide|include)|can(?:'|no)t|unable|only (?:answer|cover)|sorry|"
+                           r"there is no|\bno\b.*\b(?:was|were) found",
+                           re.IGNORECASE)
+MIN_FACT_WORDS = 6  # shorter fragments ("In mythology:", "Yes.") aren't claims worth citing
 _CHARACTER_FIXES = str.maketrans({"‐": "-", "‑": "-", "​": None, "‌": None, "‍": None})
 
 
@@ -166,6 +183,8 @@ class Agent:
         logger.info("Answered with %d LLM calls: %d prompt tokens (%d cached), %d completion tokens",
                     state.llm_calls, state.usage.prompt, state.usage.cached_prompt, state.usage.completion)
         answer = _clean_answer(turn.content or "") or NO_ANSWER
+        if state.sources and (still_uncited := uncited_sentences(answer)):
+            state.warnings.append(f"{len(still_uncited)} statement(s) in the answer are not linked to a source.")
         return AskResponse(
             answer=answer,
             sources=_attribute(answer, state, turn.model),
@@ -210,7 +229,23 @@ class Agent:
         if not (turn.content or "").strip():
             # Models occasionally end with an empty message; asking again usually produces the answer.
             turn = await counted_chat(messages, tools=TOOLS, tool_choice="none")
+        if state.sources and (uncited := uncited_sentences(_clean_answer(turn.content or ""))):
+            turn = await self._repair_citations(counted_chat, messages, turn, uncited)
         return turn, state
+
+    async def _repair_citations(self, chat: Chat, messages: list[dict[str, Any]], turn: AssistantTurn,
+                                uncited: list[str]) -> AssistantTurn:
+        """Give the model one turn to cite or drop factual sentences that carry no [S#] id.
+
+        Returns:
+            The corrected turn, or the original if the model returned nothing usable.
+        """
+        logger.info("Answer has %d uncited sentence(s), asking for a citation repair", len(uncited))
+        listed = "\n".join(f"- {sentence}" for sentence in uncited)
+        repair_messages = [*messages, {"role": "assistant", "content": turn.content},
+                           {"role": "user", "content": CITATION_REPAIR.format(sentences=listed)}]
+        repaired = await chat(repair_messages, tools=TOOLS, tool_choice="none")
+        return repaired if (repaired.content or "").strip() else turn
 
     async def _run_tool(self, call: ToolCall, state: _RequestState) -> str:
         """Execute one tool call; bad arguments and unknown tools become error text for the model."""
@@ -268,6 +303,23 @@ def _attribute(answer: str, state: _RequestState, model: str) -> list[Source]:
         return list(state.sources.values())
     # No tool was used, so the answer rests on the model alone. Say so rather than return nothing.
     return [Source(id="S0", type=SourceType.LLM, title=f"{model} (no supporting documents)")]
+
+
+def uncited_sentences(answer: str) -> list[str]:
+    """Factual sentences in paragraphs (or list items) that carry no [S#] citation at all.
+
+    Citations are checked per paragraph, not per sentence: one citation closing a paragraph is a normal
+    way to source it. Skipped as non-factual: headings, lead-in lines ending in ":", fragments under
+    MIN_FACT_WORDS words, and sentences saying the sources don't cover something (nothing to cite).
+    """
+    uncited = []
+    for line in answer.splitlines():
+        paragraph = _MARKDOWN_PREFIX_RE.sub("", line).replace("*", "").strip()
+        if not paragraph or paragraph.endswith(":") or paragraph.startswith("|") or _CITATION_RE.search(paragraph):
+            continue
+        uncited += [sentence for sentence in _SENTENCE_SPLIT_RE.split(paragraph)
+                    if len(sentence.split()) >= MIN_FACT_WORDS and not _NO_ANSWER_RE.search(sentence)]
+    return uncited
 
 
 def _clean_answer(answer: str) -> str:
