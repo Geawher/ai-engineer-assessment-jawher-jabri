@@ -6,7 +6,7 @@ import httpx
 import openai
 import pytest
 
-from app.agent import DUPLICATE_CALL, Agent, ToolName, uncited_sentences
+from app.agent import ALREADY_SHOWN, DUPLICATE_CALL, Agent, ToolName, _excerpt, _trim_profile, uncited_sentences
 from app.llm import AssistantTurn, ToolCall
 from app.retrieval.base import Chunk
 from app.retrieval.bm25 import BM25Retriever
@@ -413,3 +413,35 @@ class TestPrefetch:
         llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Who is Thor?"})), answer_turn("...")])
         await make_agent(llm, retriever, prefetch=True).ask("Who is Thor?")
         assert llm.calls[1]["messages"][-1]["content"] == DUPLICATE_CALL
+
+
+class TestTrimming:
+    RELATIVES = "Lois Lane (wife), Jor-El (father, deceased), Lara (mother), Jonathan Kent (adoptive father), Zor-El (uncle)"
+
+    def test_long_list_fields_keep_their_first_entries(self):
+        """Fields the question doesn't ask about keep MAX_LIST_ENTRIES entries; commas inside brackets don't split."""
+        profile = {"relatives": self.RELATIVES, "aliases": ["a", "b", "c", "d", "e", "f"], "base": "Metropolis"}
+        trimmed = _trim_profile(profile, "How tall is Superman?")
+        assert trimmed["relatives"] == ("Lois Lane (wife), Jor-El (father, deceased), Lara (mother), "
+                                        "Jonathan Kent (adoptive father), (+1 more)")
+        assert trimmed["aliases"] == ["a", "b", "c", "d", "(+2 more)"]
+        assert trimmed["base"] == "Metropolis" and profile["relatives"] == self.RELATIVES  # input left untouched
+
+    @pytest.mark.parametrize("question", ["Who is Superman married to?", "Who is Superman's uncle?"])
+    def test_fields_the_question_asks_about_stay_whole(self, question):
+        """Family questions keep every relative."""
+        assert _trim_profile({"relatives": self.RELATIVES}, question)["relatives"] == self.RELATIVES
+
+    def test_excerpt_keeps_the_first_sentence_and_query_matches(self):
+        """Sentences without a query word are cut and the gaps marked."""
+        text = "Baldr is a god. He is loved by all. Hodr threw mistletoe at Baldr. The gods wept."
+        assert _excerpt(text, "Baldr mistletoe") == "Baldr is a god. … Hodr threw mistletoe at Baldr. …"
+        assert _excerpt(text, "loved gods") == "Baldr is a god. He is loved by all. … The gods wept."
+
+    async def test_a_passage_is_sent_once_per_question(self, retriever):
+        """A second search returning the same passage gets a pointer to it, under the same source id."""
+        llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Thor"})),
+                           tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Thor Mjolnir"})), answer_turn("...")])
+        await make_agent(llm, retriever).ask("What weapon does Thor use?")
+        second = llm.calls[2]["messages"][-1]["content"]
+        assert second.startswith(f"[S1] (mythology) Thor — Introduction\n{ALREADY_SHOWN}")
