@@ -14,12 +14,15 @@ a an and are as at be but by did do does for from had has have he her his how i 
 its me my of on or she so than that the their them then there these they this to was we were
 what when where which who whom why will with you your about tell
 """.split())
+# Letters that are not accented forms of a Latin letter, so Unicode decomposition (NFKD) leaves them alone.
+# Without this, "Höðr" is indexed as "hoðr" and never matches a search for "Hodr", nor "Þórr" one for "Thorr".
+_LETTER_FOLDS = str.maketrans({"ð": "d", "þ": "th", "æ": "ae", "ø": "o", "œ": "oe", "ß": "ss", "đ": "d", "ł": "l"})
 
 
 def tokenize(text: str, keep_stopwords: bool = False) -> list[str]:
     """Lowercase, accent-fold and split text into word tokens, dropping stopwords unless asked to keep them."""
     # Fold accents so "Mjolnir" matches "Mjölnir" and "Ragnarok" matches "Ragnarök".
-    folded = unicodedata.normalize("NFKD", text.lower())
+    folded = unicodedata.normalize("NFKD", text.lower().translate(_LETTER_FOLDS))
     folded = "".join(char for char in folded if not unicodedata.combining(char))
     return [token for token in _TOKEN_RE.findall(folded) if keep_stopwords or token not in _STOPWORDS]
 
