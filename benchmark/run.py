@@ -3,6 +3,7 @@
     uv run python -m benchmark.run                      # full run (live LLM + Superhero API)
     uv run python -m benchmark.run --ids myth-01 hero-03
     uv run python -m benchmark.run --retrieval-only     # BM25 recall on the raw questions, no LLM
+    uv run python -m benchmark.run --summarize benchmark/results/<stamp>-results.jsonl   # rebuild a report
 """
 
 from __future__ import annotations
@@ -10,9 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import statistics
 import time
-from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -31,10 +30,11 @@ from app.schemas import AskResponse
 from app.sources.superhero import Hero, SuperheroAPIError, SuperheroClient
 from benchmark.grading import Case, Check, extra_tools, fold, grade, load_cases
 from benchmark.judge import Judge
+from benchmark.report import summarize, summarize_retrieval
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RETRY_DELAYS_SECONDS = (20, 45, 90)  # free tiers recover within a minute or two
-RECALL_DEPTHS = (1, 4, 10, 50)
+RANK_DEPTH = 50  # how deep retrieval_baseline looks for the first expected article
 T = TypeVar("T")
 
 
@@ -226,122 +226,16 @@ def retrieval_baseline(cases: list[Case], settings: Settings) -> list[dict[str, 
     chunks = load_corpus(settings.data_dir)
     retriever = BM25Retriever(chunks)
     titles = {fold(chunk.title) for chunk in chunks}
-    deepest = max(RECALL_DEPTHS)
     rows = []
     for case in cases:
         expected = _expected_articles(case, titles)
         if not expected or "search_mythology" not in case.expected_tools:
             continue
-        ranked = [fold(chunk.title) for chunk in retriever.search(case.question, deepest)]
+        ranked = [fold(chunk.title) for chunk in retriever.search(case.question, RANK_DEPTH)]
         rank = next((position for position, title in enumerate(ranked, start=1) if title in expected), None)
         rows.append({"id": case.id, "tags": case.tags, "question": case.question, "rank": rank,
                      "top3": ranked[:3]})
     return rows
-
-
-def summarize(results: list[dict[str, Any]]) -> str:
-    """Markdown summary: pass rates by category, tag and check, latency, models, and failures."""
-    lines = [f"# Benchmark results ({len(results)} questions)", ""]
-    lines += _rate_table("Category", _group_by(results, lambda result: [result["category"]]))
-    lines += _rate_table("Tag", _group_by(results, lambda result: result["tags"]))
-
-    check_totals: dict[str, list[bool]] = defaultdict(list)
-    for result in results:
-        for check, ok in result.get("checks", {}).items():
-            check_totals[check].append(ok)
-    hits = [result["retrieval_hit"] for result in results if result.get("retrieval_hit") is not None]
-    check_totals["retrieval_hit (model's own queries)"] = hits
-    lines += ["## Checks", "", "| Check | Pass | Rate |", "|---|---|---|"]
-    lines += [f"| {check} | {sum(oks)}/{len(oks)} | {_percent(oks)} |" for check, oks in check_totals.items()]
-
-    latencies = sorted(result["latency_seconds"] for result in results)
-    models = Counter(model for result in results for model in result["models"])
-    errors = [result for result in results if result.get("error")]
-    lines += ["", "## Latency and providers", "",
-              f"- p50 {statistics.median(latencies):.1f}s, p95 {latencies[int(len(latencies) * 0.95) - 1]:.1f}s, "
-              f"max {latencies[-1]:.1f}s",
-              f"- LLM turns by model: {dict(models)}",
-              f"- Questions needing a provider restart: {sum(result['provider_attempts'] > 1 for result in results)}; "
-              f"benchmark-level retries (all providers down): {sum(result['benchmark_retries'] for result in results)}",
-              f"- LLM calls per question: {sum(len(result['models']) for result in results) / len(results):.2f}",
-              f"- Questions with an extra (unneeded) tool call: {sum(bool(result.get('extra_tools')) for result in results)}",
-              f"- Hard errors: {len(errors)}", ""]
-    lines += _token_lines(results)
-    lines += _judge_lines(results)
-
-    lines += ["## Failures", ""]
-    for result in results:
-        if result["passed"]:
-            continue
-        lines += [f"### {result['id']} — {result['question']}",
-                  f"- failed: {result.get('failed_checks') or result.get('error')}",
-                  f"- tools: {result.get('tools_used')}; searches: {[q['query'] for q in result['search_queries']]}; "
-                  f"heroes: {result['hero_lookups']}",
-                  f"- sources: {[source['title'] for source in result.get('sources', [])]}",
-                  f"- answer: {(result.get('answer') or '').replace(chr(10), ' ')[:400]}",
-                  *([f"- judge: {result['judge_reason']}"] if result.get("judge_reason") else []), ""]
-    return "\n".join(lines)
-
-
-def _token_lines(results: list[dict[str, Any]]) -> list[str]:
-    """Average tokens per question and the share of prompt tokens served from the provider's cache."""
-    totals = [{key: sum(call[key] for call in result["usage"]) for key in ("prompt", "completion", "cached_prompt")}
-              for result in results if result["usage"]]
-    if not totals:
-        return []
-    prompt = sum(total["prompt"] for total in totals)
-    cached = sum(total["cached_prompt"] for total in totals)
-    return ["## Tokens", "",
-            f"- Per question (avg over {len(totals)}): {prompt / len(totals):.0f} prompt, "
-            f"{sum(total['completion'] for total in totals) / len(totals):.0f} completion",
-            f"- Prompt tokens served from the provider cache: {100 * cached / prompt if prompt else 0:.0f}%", ""]
-
-
-def _judge_lines(results: list[dict[str, Any]]) -> list[str]:
-    """Judge pass rate, and how often it agrees with the keyword checks on the same answer."""
-    judged = [result for result in results if Check.JUDGE.value in result.get("checks", {})]
-    if not judged:
-        return []
-    keyword_checks = (Check.UNKNOWN.value, Check.REFUSAL.value, Check.ANSWER.value)
-    pairs = [(result["checks"][Check.JUDGE.value], result["checks"][check])
-             for result in judged for check in keyword_checks if check in result["checks"]]
-    agree = sum(judge_ok == keyword_ok for judge_ok, keyword_ok in pairs)
-    lines = ["## Judge", "", f"- Passed {sum(result['checks'][Check.JUDGE.value] for result in judged)}/{len(judged)}"]
-    if pairs:
-        lines.append(f"- Agrees with the keyword check on {agree}/{len(pairs)} answers")
-    return lines + [""]
-
-
-def _group_by(results: list[dict[str, Any]], keys_of) -> dict[str, list[bool]]:
-    """Collect pass/fail per key, where keys_of maps a result to the keys it belongs to."""
-    groups: dict[str, list[bool]] = defaultdict(list)
-    for result in results:
-        for key in keys_of(result):
-            groups[key].append(result["passed"])
-    return dict(sorted(groups.items()))
-
-
-def _rate_table(label: str, groups: dict[str, list[bool]]) -> list[str]:
-    """A markdown table of pass counts and rates."""
-    rows = [f"| {key} | {sum(oks)}/{len(oks)} | {_percent(oks)} |" for key, oks in groups.items()]
-    return [f"## By {label.lower()}", "", f"| {label} | Pass | Rate |", "|---|---|---|", *rows, ""]
-
-
-def _percent(oks: list[bool]) -> str:
-    """Pass rate as a percentage string."""
-    return f"{100 * sum(oks) / len(oks):.0f}%" if oks else "n/a"
-
-
-def _summarize_baseline(rows: list[dict[str, Any]]) -> str:
-    """Recall@k table for the raw-question BM25 baseline, plus the misses."""
-    lines = [f"# BM25 baseline on raw questions ({len(rows)} questions)", "", "| k | Recall |", "|---|---|"]
-    for depth in RECALL_DEPTHS:
-        hits = [row["rank"] is not None and row["rank"] <= depth for row in rows]
-        lines.append(f"| {depth} | {sum(hits)}/{len(hits)} ({_percent(hits)}) |")
-    lines += ["", "## Not in top 4", ""]
-    lines += [f"- {row['id']} ({', '.join(row['tags'])}) rank={row['rank']}: {row['question']} -> top3 {row['top3']}"
-              for row in rows if row["rank"] is None or row["rank"] > 4]
-    return "\n".join(lines)
 
 
 def main() -> None:
@@ -350,24 +244,35 @@ def main() -> None:
     parser.add_argument("--ids", nargs="*", help="Only run these case ids")
     parser.add_argument("--retrieval-only", action="store_true", help="BM25 recall on raw questions, no LLM calls")
     parser.add_argument("--delay", type=float, default=2.0, help="Seconds to wait between questions")
+    parser.add_argument("--summarize", type=Path, metavar="RESULTS_JSONL",
+                        help="Rebuild the report for an existing results file instead of running")
     args = parser.parse_args()
 
     settings = get_settings()
     cases = [case for case in load_cases() if not args.ids or case.id in args.ids]
     RESULTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    retrieval_rows = retrieval_baseline(cases, settings)
 
     if args.retrieval_only:
-        report = _summarize_baseline(retrieval_baseline(cases, settings))
+        report = summarize_retrieval(retrieval_rows)
         (RESULTS_DIR / f"{stamp}-bm25-baseline.md").write_text(report, encoding="utf-8")
         print(report)
         return
 
-    results = asyncio.run(run_benchmark(cases, settings, args.delay))
-    with (RESULTS_DIR / f"{stamp}-results.jsonl").open("w", encoding="utf-8") as output:
-        output.writelines(json.dumps(result, ensure_ascii=False) + "\n" for result in results)
-    summary = summarize(results)
-    (RESULTS_DIR / f"{stamp}-summary.md").write_text(summary, encoding="utf-8")
+    if args.summarize:
+        with args.summarize.open(encoding="utf-8") as lines:
+            results = [json.loads(line) for line in lines if line.strip()]
+        summary_path = args.summarize.with_name(args.summarize.name.replace("-results.jsonl", "-summary.md"))
+    else:
+        results = asyncio.run(run_benchmark(cases, settings, args.delay))
+        with (RESULTS_DIR / f"{stamp}-results.jsonl").open("w", encoding="utf-8") as output:
+            output.writelines(json.dumps(result, ensure_ascii=False) + "\n" for result in results)
+        summary_path = RESULTS_DIR / f"{stamp}-summary.md"
+
+    titles = {fold(chunk.title) for chunk in load_corpus(settings.data_dir)}
+    summary = summarize(results, {case.id: case for case in load_cases()}, titles, retrieval_rows)
+    summary_path.write_text(summary, encoding="utf-8")
     print(summary)
 
 
