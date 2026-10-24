@@ -23,26 +23,18 @@ class ToolName(StrEnum):
 
 
 SYSTEM_PROMPT = f"""\
-You answer questions about Norse and Greek mythology and about comic-book superheroes.
-
-Tools:
-- {ToolName.SEARCH_MYTHOLOGY}: keyword search over Wikipedia articles on Norse and Greek mythology.
-- {ToolName.GET_SUPERHERO}: looks up a comic-book character by name in the Superhero API.
+You answer questions about Norse and Greek mythology and comic-book superheroes, using only your tools.
 
 Rules:
-1. Pick the source(s) the question needs: {ToolName.SEARCH_MYTHOLOGY} for gods, myths and legendary heroes; \
-{ToolName.GET_SUPERHERO} for comic-book characters. Many names exist in both (Thor, Loki, Odin, Hela, Sif, \
-Hercules, Ares, Medusa, Ymir, Valkyrie...): unless the question clearly limits itself to one, call both tools \
-and cover both.
-2. When a question involves several figures, search for each one separately; one search rarely covers two.
-3. Answer ONLY from tool results. If they don't contain the answer, say you don't know. \
-Do not add outside knowledge.
-4. Each tool result is labelled with an id like [S1]. Cite the ids you used inline, right after \
-the facts they support, e.g. "Thor wields Mjölnir [S2]."
-5. If the question is not about mythology or superheroes, don't call any tools; say you can only \
-answer questions about those topics.
-6. Put the complete answer in your final message: text written alongside tool calls is not shown \
-to the user.
+1. Use {ToolName.SEARCH_MYTHOLOGY} for myths, gods and legendary heroes, {ToolName.GET_SUPERHERO} for comic-book \
+characters. Many names exist in both (Thor, Loki, Odin, Hercules, Medusa...): unless the question limits itself \
+to one, use both and cover both.
+2. Search once per figure; one search rarely covers two.
+3. Answer only from tool results. If they don't contain the answer, say you don't know; if they contradict \
+the question's premise, say so.
+4. Cite the [S#] id of each fact right after it, e.g. "Thor wields Mjölnir [S2]."
+5. For questions outside mythology and superheroes, call no tools and say you only cover those topics.
+6. Your final message must hold the whole answer: text sent alongside tool calls is not shown.
 7. Be concise."""
 
 TOOLS = [
@@ -50,17 +42,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": ToolName.SEARCH_MYTHOLOGY,
-            "description": "Search Wikipedia articles on Norse and Greek mythology (gods, giants, "
-                           "legendary heroes, myths, places like Asgard or Olympus). Keyword search: "
-                           "name the figure explicitly and call once per figure.",
+            "description": "Keyword search over Wikipedia articles on Norse and Greek mythology. "
+                           "Name the figure explicitly; one call per figure.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Keywords to search for, e.g. 'Thor hammer Mjolnir giants'.",
-                    },
-                },
+                "properties": {"query": {"type": "string", "description": "Keywords, e.g. 'Thor hammer Mjolnir'."}},
                 "required": ["query"],
             },
         },
@@ -69,16 +55,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": ToolName.GET_SUPERHERO,
-            "description": "Look up a comic-book character (Marvel, DC, ...) by name. Returns "
-                           "publisher, first appearance, alignment, powerstats, appearance, affiliations. "
-                           "Some mythological names (Thor, Loki, Hercules...) also have a comic version. "
-                           "It finds one character by name: it cannot list or rank characters, so questions like "
-                           "'who is the smartest/strongest' cannot be answered from it.",
+            "description": "Look up one comic-book character by name: publisher, first appearance, alignment, "
+                           "powerstats, appearance, affiliations. It cannot list or rank characters, so "
+                           "'who is the smartest/strongest' questions can't be answered from it.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Character name, e.g. 'Thor' or 'Wonder Woman'."},
-                },
+                "properties": {"name": {"type": "string", "description": "Character name, e.g. 'Wonder Woman'."}},
                 "required": ["name"],
             },
         },
@@ -273,7 +255,7 @@ class Agent:
         for hero in heroes:
             # No URL: the API's only per-hero URL embeds the private token. The id in the title is enough to look it up.
             source_id = state.add_source(SourceType.SUPERHERO_API, f"{hero.name} (Superhero API #{hero.id})", None)
-            blocks.append(f"[{source_id}] {json.dumps(hero.profile, ensure_ascii=False)}")
+            blocks.append(f"[{source_id}] {json.dumps(hero.profile, ensure_ascii=False, separators=(',', ':'))}")
         return "\n\n".join(blocks)
 
 

@@ -118,15 +118,17 @@ class SuperheroClient:
 
 
 def _rank(results: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
-    """Order search results for a lowercase query: exact names first, then whole-word matches.
+    """Pick the results worth sending to the model for a lowercase query.
 
-    The API matches substrings, so "thor" also returns "Lex Luthor". Results where the query is not
-    a whole word of the name are dropped, unless nothing else matched.
+    Exact name matches win outright ("thor" -> Thor, not Thor Girl), which saves tokens; several exact
+    matches all stay (two characters are called "Batman"). Otherwise whole-word matches are kept, and
+    substring-only hits ("thor" in "Lex Luthor") are dropped unless nothing else matched.
     """
+    exact = [result for result in results if result.get("name", "").lower() == key]
+    if exact:
+        return exact
     word = re.compile(rf"\b{re.escape(key)}\b")
-    whole_word = [result for result in results if word.search(result.get("name", "").lower())]
-    candidates = whole_word or results
-    return sorted(candidates, key=lambda result: result.get("name", "").lower() != key)
+    return [result for result in results if word.search(result.get("name", "").lower())] or results
 
 
 def _profile(raw: dict[str, Any]) -> dict[str, Any]:
