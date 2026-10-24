@@ -39,7 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.agent = Agent(llm, retriever, superheroes,
                                 collections=collections, titles=TitleIndex(chunks),
                                 top_k=settings.retrieval_top_k,
-                                max_tool_rounds=settings.max_tool_rounds)
+                                max_tool_rounds=settings.max_tool_rounds,
+                                prefetch=settings.prefetch_sources)
         yield
     await llm.close()
 

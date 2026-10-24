@@ -165,6 +165,7 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
                 RecordingLLM(llm, trace), RecordingRetriever(retriever, trace), RecordingSuperheroes(superheroes, trace),
                 collections=collections, titles=titles,
                 top_k=settings.retrieval_top_k, max_tool_rounds=settings.max_tool_rounds,
+                prefetch=settings.prefetch_sources,
             )
 
         for index, case in enumerate(cases, start=1):

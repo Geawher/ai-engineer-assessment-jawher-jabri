@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # ranked 4th ("Baldr killed": the mistletoe passages were #4 and #5), which cost answers in the benchmark.
     retrieval_top_k: int = 4
     max_tool_rounds: int = 3
+    prefetch_sources: bool = True  # look up names in the question before the first LLM call
 
     @field_validator("llm_fallback_base_url", "llm_fallback_api_key", "llm_fallback_model", mode="before")
     @classmethod
