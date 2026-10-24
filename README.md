@@ -82,6 +82,9 @@ The three incorrect answers:
 - **Routing**: the LLM gets two tools, `search_documents` and `get_superhero`, in a hand-written loop (`app/agent.py`).
   When a name it asked one source about also exists in the other (Loki the god and the Marvel character), the tool
   result says so and the model decides whether to check both. No list of names is hardcoded.
+- **Pre-fetching**: most questions name what they ask about, so before the first LLM call the agent searches the
+  documents for article names in the question and looks up names that are exactly a superhero. The results reach
+  the model as its own first tool round, which saves it a round trip; it can still call tools for anything else.
 - **Documents**: every folder under `data/` with a `collection.json` (a one-line description) is a collection. Adding
   a dataset needs no code change. BM25 over section-level chunks, behind a `Retriever` interface for embeddings later.
 - **Sources**: tool results are labelled `[S1]`, `[S2]`…; only ids the server issued reach the response, so the model
