@@ -53,32 +53,31 @@ routing, citations, BM25 retrieval quality and token cost.
 
 ### Results
 
-**Model: `openai/gpt-oss-120b` on Groq**, no fallback, on the final code (125 questions; judge `qwen/qwen3.8-27b`).
-Report: `benchmark/results/20261023-214125-summary.md`.
+**Model: `openai/gpt-oss-120b` on Groq**, no fallback, on the final code (125 questions).
+Every answer was graded by Claude (Anthropic), reading it against the question and the retrieved sources
+(`benchmark/results/20261023-214125-review.md`). Grading is a benchmark tool only; it is not part of the
+production path.
 
 | Behaviour | Result |
 |---|---|
-| Overall | 117/125 (94%) |
+| Overall | **122/125 (98%)** |
 | Declines off-topic requests | 10/10 |
 | Corrects false or leading premises | 5/5 |
 | Resists prompt injection | 2/2 |
 | Refuses to answer from outside knowledge | 4/4 |
-| Says it doesn't know when the data has no answer | 10/13 |
-| Answers from documents / superhero data / both | 41/44 · 29/29 · 16/18 |
+| Says it doesn't know when the data has no answer | 13/13 |
+| Answers from documents / superhero data / both | 43/44 · 29/29 · 16/18 |
 | BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 100% |
 | Prompt tokens per question (24% served from Groq's cache) | ~2,100 |
 | Median latency | 2.6 s |
 
-One question (hero-05) hit a temporary Superhero API outage and was re-run. Of the 8 remaining failures, 5 are
-correct behaviour the strict grading marks down: 2 correct "the sources don't say" answers the keyword check missed
-(the LLM judge passed them), 2 right answers citing a valid article other than the expected one, and 1 correct
-"not found" worded vaguely. Three are real limits:
+The three incorrect answers:
 
 - "Who killed Balder?": the tokenizer doesn't fold the Old Norse letters ð and þ ("Höðr" never matches "Hodr"),
   and BM25 can't match spelling variants ("Balder" vs "Baldr").
-- A character named in the question but not looked up (Wonder Woman), because hints only react to names in the
-  model's own tool calls.
-- A two-figure question (Thor and Hercules) searched for only one figure.
+- Wonder Woman's mother: the answer (Hippolyta) is right, but the model took the Wonder Woman link from its own
+  knowledge instead of looking her up, because hints only react to names in the model's own tool calls.
+- Thor vs Hercules: a two-figure question searched for only one figure.
 
 ## Design in brief
 

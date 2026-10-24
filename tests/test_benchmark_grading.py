@@ -135,3 +135,27 @@ def test_forbidden_text():
 def test_only_relevant_checks_run():
     """A case without keywords or sources gets just the route check."""
     assert set(grade(make_case(), make_response())) == {Check.ROUTE}
+
+
+class TestFixedFalseNegatives:
+    @pytest.mark.parametrize("answer", [
+        "Heimdall and his wife have many children according to the Poetic Edda, though no exact number is given [S1].",
+        "I'm sorry, but the available data doesn't include information about Wonder Woman's favourite colour.",
+    ])
+    def test_unknown_phrasings_from_the_gpt_oss_120b_run(self, answer):
+        """Correct "the sources don't say" answers that the keyword list used to miss."""
+        assert grade(make_case(expect_unknown=True), make_response(answer))[Check.UNKNOWN]
+
+    def test_a_cited_passage_containing_the_answer_counts(self):
+        """Citing another article is fine when the cited passage itself holds the answer."""
+        case = make_case(expected_sources=[["Achilles"]], answer_keywords=[["Paris"]])
+        response = make_response("Paris killed Achilles [S1].", sources=[source("Apollo — Trojan War")])
+        texts = {"Apollo — Trojan War": "Apollo guided the arrow Paris shot at Achilles."}
+        assert grade(case, response, texts)[Check.SOURCES]
+
+    def test_a_cited_passage_without_the_answer_still_fails(self):
+        """An off-target citation isn't rescued just because the answer text is right."""
+        case = make_case(expected_sources=[["Achilles"]], answer_keywords=[["Paris"]])
+        response = make_response("Paris killed Achilles [S1].", sources=[source("Apollo — Cult")])
+        texts = {"Apollo — Cult": "Apollo was worshipped at Delphi."}
+        assert not grade(case, response, texts)[Check.SOURCES]

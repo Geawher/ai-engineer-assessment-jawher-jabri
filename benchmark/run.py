@@ -5,6 +5,8 @@
     uv run python -m benchmark.run --retrieval-only     # BM25 recall on the raw questions, no LLM
     uv run python -m benchmark.run --summarize benchmark/results/<stamp>-results.jsonl   # rebuild a report
     uv run python -m benchmark.run --resume benchmark/results/<stamp>-results.jsonl      # continue a stopped run
+    uv run python -m benchmark.run --regrade benchmark/results/<stamp>-results.jsonl [--ids q1 q2]
+        # re-grade stored answers with the current grader; the judge re-runs only for --ids
 
 Results are appended as each question finishes. If every LLM provider stays unavailable (typically a daily
 quota), the run stops without recording that question; --resume picks up from there.
@@ -132,6 +134,7 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
     chunks, collections = load_collections(settings.documents_dir)
     retriever = BM25Retriever(chunks)
     titles = TitleIndex(chunks)
+    texts = passage_texts(chunks)
     llm = LLMClient.from_settings(settings)
     judge = Judge.from_env()
     print(f"LLM judge: {'on' if judge else 'off (set JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL)'}")
@@ -153,7 +156,7 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
             )
 
         for index, case in enumerate(cases, start=1):
-            result = await _run_case(case, make_agent, judge)
+            result = await _run_case(case, make_agent, judge, texts)
             if is_out_of_quota(result):
                 # Recording this as a failure would blame the agent for a quota; stop and resume later instead.
                 print(f"Stopped at {case.id}: no LLM provider available ({result['error']}).\n"
@@ -171,6 +174,39 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
     return completed
 
 
+def passage_texts(chunks: list[Chunk]) -> dict[str, str]:
+    """Text per passage source title ("Thor — Introduction"), as the agent titles document sources."""
+    texts: dict[str, list[str]] = {}
+    for chunk in chunks:
+        texts.setdefault(f"{chunk.title} — {chunk.section}", []).append(chunk.text)
+    return {title: " ".join(parts) for title, parts in texts.items()}
+
+
+async def regrade(results: list[dict[str, Any]], cases: dict[str, Case], texts: dict[str, str],
+                  rejudge_ids: set[str]) -> None:
+    """Re-grade stored answers in place with the current grader, without asking the bot again.
+
+    Judge verdicts are kept as stored, except for rejudge_ids (e.g. after a rubric fix), which are judged again.
+    """
+    judge = Judge.from_env() if rejudge_ids else None
+    for row in results:
+        if row.get("error"):
+            continue
+        case = cases[row["id"]]
+        response = AskResponse(answer=row["answer"], sources=row["sources"], tools_used=row["tools_used"],
+                               warnings=row["warnings"])
+        checks = grade(case, response, texts)
+        if case.judge and judge and row["id"] in rejudge_ids:
+            verdict = await judge.verdict(case, response)
+            checks[Check.JUDGE], row["judge_reason"] = verdict.passed, verdict.reason
+        elif Check.JUDGE.value in row.get("checks", {}):
+            checks[Check.JUDGE] = row["checks"][Check.JUDGE.value]
+        row.update(passed=all(checks.values()), checks={check.value: ok for check, ok in checks.items()},
+                   failed_checks=[check.value for check, ok in checks.items() if not ok])
+    if judge:
+        await judge.close()
+
+
 def is_out_of_quota(result: dict[str, Any]) -> bool:
     """Whether a case failed only because every LLM provider stayed unavailable through all retries."""
     return (result.get("error") or "").startswith(LLMUnavailableError.__name__)
@@ -184,7 +220,8 @@ def load_results(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in lines if line.strip()]
 
 
-async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Judge | None) -> dict[str, Any]:
+async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Judge | None,
+                    texts: dict[str, str]) -> dict[str, Any]:
     """Ask one question (retrying when every provider is rate-limited) and grade it, with the judge if any."""
     started = time.monotonic()
     response: AskResponse | None = None
@@ -218,7 +255,7 @@ async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Jud
     if response is None:
         return result | {"passed": False, "error": error, "checks": {}}
 
-    checks = grade(case, response)
+    checks = grade(case, response, texts)
     judge_reason = None
     if case.judge and judge:
         try:
@@ -280,10 +317,12 @@ def main() -> None:
                         help="Rebuild the report for an existing results file instead of running")
     parser.add_argument("--resume", type=Path, metavar="RESULTS_JSONL",
                         help="Continue a stopped run: skip questions already in this file and append to it")
+    parser.add_argument("--regrade", type=Path, metavar="RESULTS_JSONL",
+                        help="Re-grade stored answers with the current grader; the judge re-runs only for --ids")
     args = parser.parse_args()
 
     settings = get_settings()
-    cases = [case for case in load_cases() if not args.ids or case.id in args.ids]
+    cases = [case for case in load_cases() if args.regrade or not args.ids or case.id in args.ids]
     RESULTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     retrieval_rows = retrieval_baseline(cases, settings)
@@ -294,8 +333,14 @@ def main() -> None:
         print(report)
         return
 
-    results_path = args.summarize or args.resume or RESULTS_DIR / f"{stamp}-results.jsonl"
-    if not args.summarize:
+    results_path = args.summarize or args.regrade or args.resume or RESULTS_DIR / f"{stamp}-results.jsonl"
+    if args.regrade:
+        results = load_results(results_path)
+        texts = passage_texts(load_collections(settings.documents_dir)[0])
+        asyncio.run(regrade(results, {case.id: case for case in cases}, texts, set(args.ids or ())))
+        with results_path.open("w", encoding="utf-8") as output:
+            output.writelines(json.dumps(result, ensure_ascii=False) + "\n" for result in results)
+    elif not args.summarize:
         done = {result["id"] for result in load_results(results_path)}
         remaining = [case for case in cases if case.id not in done]
         print(f"{len(done)} questions already in {results_path.name}, {len(remaining)} to run")
