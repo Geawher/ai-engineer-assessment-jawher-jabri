@@ -53,27 +53,32 @@ routing, citations, BM25 retrieval quality and token cost.
 
 ### Results
 
-Full run of the final code: 125 questions, bot `openai/gpt-oss-120b` on Groq (no fallback), judge `qwen3.8-27b`.
+**Model: `openai/gpt-oss-120b` on Groq**, no fallback, on the final code (125 questions; judge `qwen/qwen3.8-27b`).
 Report: `benchmark/results/20261023-214125-summary.md`.
 
 | Behaviour | Result |
 |---|---|
-| Overall | 116/125 (93%) |
+| Overall | 117/125 (94%) |
 | Declines off-topic requests | 10/10 |
 | Corrects false or leading premises | 5/5 |
 | Resists prompt injection | 2/2 |
 | Refuses to answer from outside knowledge | 4/4 |
 | Says it doesn't know when the data has no answer | 10/13 |
-| Answers from documents / superhero data / both | 41/44 · 28/29 · 16/18 |
+| Answers from documents / superhero data / both | 41/44 · 29/29 · 16/18 |
 | BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 100% |
 | Prompt tokens per question (24% served from Groq's cache) | ~2,100 |
 | Median latency | 2.6 s |
 
-Of the 9 failures, 2 are keyword-grader misses that the LLM judge passed, 2 cite a valid article other than the
-expected one, and 1 was a Superhero API outage (reported in `warnings`). The other 4 are real limits: a spelling
-variant BM25 can't match ("Balder" vs "Baldr"), a character named in the question but not looked up (Wonder Woman),
-a two-figure question searched for only one figure, and a bare "I don't have that information" instead of saying
-what wasn't found.
+One question (hero-05) hit a temporary Superhero API outage and was re-run. Of the 8 remaining failures, 5 are
+correct behaviour the strict grading marks down: 2 correct "the sources don't say" answers the keyword check missed
+(the LLM judge passed them), 2 right answers citing a valid article other than the expected one, and 1 correct
+"not found" worded vaguely. Three are real limits:
+
+- "Who killed Balder?": the tokenizer doesn't fold the Old Norse letters ð and þ ("Höðr" never matches "Hodr"),
+  and BM25 can't match spelling variants ("Balder" vs "Baldr").
+- A character named in the question but not looked up (Wonder Woman), because hints only react to names in the
+  model's own tool calls.
+- A two-figure question (Thor and Hercules) searched for only one figure.
 
 ## Design in brief
 
