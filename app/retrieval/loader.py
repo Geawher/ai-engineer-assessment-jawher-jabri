@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -7,22 +8,46 @@ from app.retrieval.base import Chunk
 
 MAX_CHUNK_CHARS = 1200
 INTRO_SECTION = "Introduction"
+COLLECTION_FILE = "collection.json"
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-def load_corpus(data_dir: Path) -> list[Chunk]:
-    """Load and chunk every markdown article in data_dir, in a stable (sorted) order."""
+def load_collections(documents_dir: Path) -> tuple[list[Chunk], dict[str, str]]:
+    """Load every document collection under documents_dir.
+
+    A collection is a sub-folder holding markdown articles and a collection.json with a "description"
+    (shown to the model). Adding a dataset means adding a folder: no code or prompt changes.
+
+    Returns:
+        All chunks, and each collection's description by name.
+
+    Raises:
+        ValueError: If documents_dir holds no collection.
+    """
     chunks: list[Chunk] = []
-    for path in sorted(data_dir.glob("*.md")):
-        chunks.extend(parse_article(path.stem, path.read_text(encoding="utf-8")))
+    descriptions: dict[str, str] = {}
+    for folder in sorted(path for path in documents_dir.iterdir() if (path / COLLECTION_FILE).is_file()):
+        descriptions[folder.name] = json.loads((folder / COLLECTION_FILE).read_text(encoding="utf-8"))["description"]
+        chunks += load_corpus(folder, collection=folder.name)
+    if not descriptions:
+        raise ValueError(f"No document collection (a folder with {COLLECTION_FILE}) under {documents_dir}")
+    return chunks, descriptions
+
+
+def load_corpus(folder: Path, collection: str) -> list[Chunk]:
+    """Load and chunk every markdown article in one collection folder, in a stable (sorted) order."""
+    chunks: list[Chunk] = []
+    for path in sorted(folder.glob("*.md")):
+        chunks.extend(parse_article(path.stem, path.read_text(encoding="utf-8"), collection))
     return chunks
 
 
-def parse_article(doc_id: str, markdown: str) -> list[Chunk]:
+def parse_article(doc_id: str, markdown: str, collection: str) -> list[Chunk]:
     """Split one article into section-scoped chunks.
 
     Args:
         doc_id: Stable identifier for the article, used as the chunk id prefix.
+        collection: Name of the collection the article belongs to.
         markdown: Article in the format written by scripts/fetch_mythology.py:
             "# Title", "Source: <url>", then "## Section" headings with paragraphs.
 
@@ -38,7 +63,7 @@ def parse_article(doc_id: str, markdown: str) -> list[Chunk]:
     # so ids use a running index rather than the section name.
     pieces = [(section, text) for section, paragraphs in _sections(lines[2:]) for text in _pack(paragraphs)]
     return [
-        Chunk(id=f"{doc_id}:{i}", title=title, section=section, url=url + _anchor(section), text=text)
+        Chunk(id=f"{collection}/{doc_id}:{i}", collection=collection, title=title, section=section, url=url + _anchor(section), text=text)
         for i, (section, text) in enumerate(pieces)
     ]
 

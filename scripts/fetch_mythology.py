@@ -1,6 +1,7 @@
 """Download the mythology dataset from Wikipedia into data/mythology/*.md.
 
-The output is committed to the repo so the app runs without hitting Wikipedia.
+The output is committed to the repo so the app runs without hitting Wikipedia. The folder is one
+document collection: its collection.json holds the description the model sees.
 Re-run only to refresh or extend the article list:
 
     uv run python scripts/fetch_mythology.py

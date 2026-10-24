@@ -91,7 +91,7 @@ async def test_provider_specific_tool_call_fields_are_kept():
         "tool_calls": [{
             "id": "call_1",
             "type": "function",
-            "function": {"name": "search_mythology", "arguments": "{\"query\": \"Loki\"}"},
+            "function": {"name": "search_documents", "arguments": "{\"query\": \"Loki\"}"},
             "extra_content": {"google": {"thought_signature": "sig"}},
         }],
     })

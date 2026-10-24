@@ -20,12 +20,13 @@ from typing import Any, TypeVar
 
 import httpx
 
-from app.agent import Agent
+from app.agent import Agent, ToolName
 from app.config import Settings, get_settings
 from app.llm import AssistantTurn, Chat, LLMClient, LLMError, LLMUnavailableError, ToolChoice
 from app.retrieval.base import Chunk
 from app.retrieval.bm25 import BM25Retriever
-from app.retrieval.loader import load_corpus
+from app.retrieval.titles import TitleIndex
+from app.retrieval.loader import load_collections
 from app.schemas import AskResponse
 from app.sources.superhero import Hero, SuperheroAPIError, SuperheroClient
 from benchmark.grading import Case, Check, extra_tools, fold, grade, load_cases
@@ -64,9 +65,9 @@ class RecordingRetriever:
         self._inner = inner
         self.trace = trace
 
-    def search(self, query: str, k: int) -> list[Chunk]:
+    def search(self, query: str, k: int, collection: str | None = None) -> list[Chunk]:
         """Delegate and record the query with the returned article titles."""
-        chunks = self._inner.search(query, k)
+        chunks = self._inner.search(query, k, collection)
         self.trace.search_queries.append({"query": query, "titles": [chunk.title for chunk in chunks]})
         return chunks
 
@@ -120,7 +121,9 @@ class RecordingLLM:
 
 async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: float) -> list[dict[str, Any]]:
     """Ask every case through a fully wired agent and grade the answers."""
-    retriever = BM25Retriever(load_corpus(settings.data_dir))
+    chunks, collections = load_collections(settings.documents_dir)
+    retriever = BM25Retriever(chunks)
+    titles = TitleIndex(chunks)
     llm = LLMClient.from_settings(settings)
     judge = Judge.from_env()
     print(f"LLM judge: {'on' if judge else 'off (set JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL)'}")
@@ -137,6 +140,7 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
             """A fully wired agent whose dependencies record into trace."""
             return Agent(
                 RecordingLLM(llm, trace), RecordingRetriever(retriever, trace), RecordingSuperheroes(superheroes, trace),
+                collections=collections, titles=titles,
                 top_k=settings.retrieval_top_k, max_tool_rounds=settings.max_tool_rounds,
             )
 
@@ -216,20 +220,20 @@ def _expected_articles(case: Case, titles: set[str]) -> set[str]:
 def _retrieval_hit(case: Case, trace: Trace) -> bool | None:
     """Whether any search the model ran returned an expected article; None if not applicable."""
     expected = {fold(name) for group in case.expected_sources for name in group}
-    if not expected or not trace.search_queries or "search_mythology" not in case.expected_tools:
+    if not expected or not trace.search_queries or ToolName.SEARCH_DOCUMENTS not in case.expected_tools:
         return None
     return any(fold(title) in expected for query in trace.search_queries for title in query["titles"])
 
 
 def retrieval_baseline(cases: list[Case], settings: Settings) -> list[dict[str, Any]]:
     """Rank of the first expected-article chunk when the raw question is the BM25 query."""
-    chunks = load_corpus(settings.data_dir)
+    chunks, _ = load_collections(settings.documents_dir)
     retriever = BM25Retriever(chunks)
     titles = {fold(chunk.title) for chunk in chunks}
     rows = []
     for case in cases:
         expected = _expected_articles(case, titles)
-        if not expected or "search_mythology" not in case.expected_tools:
+        if not expected or ToolName.SEARCH_DOCUMENTS not in case.expected_tools:
             continue
         ranked = [fold(chunk.title) for chunk in retriever.search(case.question, RANK_DEPTH)]
         rank = next((position for position, title in enumerate(ranked, start=1) if title in expected), None)
@@ -270,7 +274,7 @@ def main() -> None:
             output.writelines(json.dumps(result, ensure_ascii=False) + "\n" for result in results)
         summary_path = RESULTS_DIR / f"{stamp}-summary.md"
 
-    titles = {fold(chunk.title) for chunk in load_corpus(settings.data_dir)}
+    titles = {fold(chunk.title) for chunk in load_collections(settings.documents_dir)[0]}
     summary = summarize(results, {case.id: case for case in load_cases()}, titles, retrieval_rows)
     summary_path.write_text(summary, encoding="utf-8")
     print(summary)

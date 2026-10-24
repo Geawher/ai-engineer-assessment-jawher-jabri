@@ -44,8 +44,8 @@ def test_ask_returns_answer_with_sources(client_for):
     """A valid question returns the agent's answer and sources, with whitespace stripped."""
     agent = StubAgent(AskResponse(
         answer="Thor is a god [S1].",
-        sources=[Source(id="S1", type=SourceType.MYTHOLOGY_DATASET, title="Thor — Introduction")],
-        tools_used=["search_mythology"],
+        sources=[Source(id="S1", type=SourceType.DOCUMENT, title="Thor — Introduction")],
+        tools_used=["search_documents"],
     ))
     response = client_for(agent).post("/ask", json={"question": "  Who is Thor?  "})
 

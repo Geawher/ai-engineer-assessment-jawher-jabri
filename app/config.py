@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     superhero_timeout_seconds: float = 10.0
     superhero_cache_ttl_seconds: int = 3600
 
-    data_dir: Path = Path("data/mythology")
+    # Each sub-folder with a collection.json is a document collection (data/mythology today).
+    documents_dir: Path = Path("data")
     # 4, not 3: the right *article* was always in the top 3, but the passage holding the answer sometimes
     # ranked 4th ("Baldr killed": the mistletoe passages were #4 and #5), which cost answers in the benchmark.
     retrieval_top_k: int = 4
