@@ -67,16 +67,14 @@ production path.
 | Refuses to answer from outside knowledge | 4/4 |
 | Says it doesn't know when the data has no answer | 13/13 |
 | Answers from documents / superhero data / both | 43/44 · 29/29 · 16/18 |
-| BM25: recall@3 on the raw question / hit rate with the model's own queries | 90% / 100% |
+| BM25 (4 passages per search): recall on the raw question / with the model's own queries | 95% / 100% |
 | Prompt tokens per question (24% served from Groq's cache) | ~2,100 |
-| Median latency | 2.6 s |
+| Median latency | 2.5 s |
 
 The three incorrect answers:
 
-- "Who killed Balder?": the tokenizer doesn't fold the Old Norse letters ð and þ ("Höðr" never matches "Hodr"),
-  and BM25 can't match spelling variants ("Balder" vs "Baldr").
-- Wonder Woman's mother: the answer (Hippolyta) is right, but the model took the Wonder Woman link from its own
-  knowledge instead of looking her up, because hints only react to names in the model's own tool calls.
+- "Who killed Balder?": retrieval missed "Höðr" (the tokenizer leaves ð unfolded) and the spelling "Balder".
+- Wonder Woman's mother: right answer, but the Wonder Woman link came from the model, not a lookup.
 - Thor vs Hercules: a two-figure question searched for only one figure.
 
 ## Design in brief
@@ -87,8 +85,8 @@ The three incorrect answers:
 - **Documents**: every folder under `data/` with a `collection.json` (a one-line description) is a collection. Adding
   a dataset needs no code change. BM25 over section-level chunks, behind a `Retriever` interface for embeddings later.
 - **Sources**: tool results are labelled `[S1]`, `[S2]`…; only ids the server issued reach the response, so the model
-  can't invent a source. Paragraphs left uncited get one repair turn, and any still uncited are flagged in
-  `warnings`. Answers given without tools are attributed to `llm`.
+  can't invent a source. Uncited claims get one repair turn, and any still uncited are flagged in `warnings`.
+  Answers given without tools are attributed to `llm`.
 - **Resilience**: an optional fallback LLM. On a rate limit or outage the whole question restarts there, because one
   provider's tool-call history is not valid input for another.
 
@@ -96,10 +94,13 @@ The three incorrect answers:
 
 - No conversation memory, auth or rate limiting; cache and index are in memory.
 - The Superhero API only searches by name, so "who is the strongest" questions can't be answered.
-- Free tiers limit throughput: about 75 questions per day per Groq model (a question is ~2,500 tokens), and ~20
-  requests per day on Gemini's free tier. A second Groq model makes the most useful free fallback.
+- Free tiers limit throughput: a question costs ~2,400 tokens including the answer, so Groq's 200k tokens per day
+  is about 80 questions per model, and Gemini's free tier allows ~20 requests per day. A second Groq model makes
+  the most useful free fallback.
 
 ## Data
 
 `data/mythology/` holds Wikipedia articles (CC BY-SA 4.0), fetched with `scripts/fetch_mythology.py`.
-To add a collection, create `data/<name>/` with markdown articles in the same format and a `collection.json`.
+To add a collection, create `data/<name>/` with a `collection.json` such as `{"description": "Wikipedia articles on
+Egyptian mythology"}` (shown to the model) and one markdown file per article: a `# Title` line, a
+`Source: <url>` line, then `## Section` headings with paragraphs. Restart the app; no code changes are needed.
