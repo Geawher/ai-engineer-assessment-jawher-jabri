@@ -39,3 +39,22 @@ def test_mrr_counts_misses_as_zero():
 def test_source_set_names(tools, name):
     """Tool sets map to the routing table's row and column names."""
     assert _source_set(tools) == name
+
+
+def test_quota_stop_is_detected_only_for_provider_outages():
+    """Only "all providers unavailable" stops a run; agent failures and other errors are recorded."""
+    from benchmark.run import is_out_of_quota
+
+    assert is_out_of_quota({"error": "LLMUnavailableError: All LLM providers are unavailable"})
+    assert not is_out_of_quota({"error": "LLMError: LLM provider x rejected the request"})
+    assert not is_out_of_quota({"passed": False, "failed_checks": ["answer"]})
+
+
+def test_load_results_reads_appended_rows(tmp_path):
+    """A results file written line by line reads back in order; a missing file is empty."""
+    from benchmark.run import load_results
+
+    path = tmp_path / "x-results.jsonl"
+    assert load_results(path) == []
+    path.write_text('{"id": "a"}\n{"id": "b"}\n')
+    assert [row["id"] for row in load_results(path)] == ["a", "b"]

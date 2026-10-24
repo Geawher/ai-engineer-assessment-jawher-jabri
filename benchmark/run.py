@@ -4,6 +4,10 @@
     uv run python -m benchmark.run --ids myth-01 hero-03
     uv run python -m benchmark.run --retrieval-only     # BM25 recall on the raw questions, no LLM
     uv run python -m benchmark.run --summarize benchmark/results/<stamp>-results.jsonl   # rebuild a report
+    uv run python -m benchmark.run --resume benchmark/results/<stamp>-results.jsonl      # continue a stopped run
+
+Results are appended as each question finishes. If every LLM provider stays unavailable (typically a daily
+quota), the run stops without recording that question; --resume picks up from there.
 """
 
 from __future__ import annotations
@@ -119,15 +123,19 @@ class RecordingLLM:
         return await self._inner.run_conversation(recorded)
 
 
-async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: float) -> list[dict[str, Any]]:
-    """Ask every case through a fully wired agent and grade the answers."""
+async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: float, results_path: Path) -> bool:
+    """Ask every case through a fully wired agent, grade it, and append the result to results_path.
+
+    Returns:
+        True if every case ran; False if the run stopped because no LLM provider was available.
+    """
     chunks, collections = load_collections(settings.documents_dir)
     retriever = BM25Retriever(chunks)
     titles = TitleIndex(chunks)
     llm = LLMClient.from_settings(settings)
     judge = Judge.from_env()
     print(f"LLM judge: {'on' if judge else 'off (set JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL)'}")
-    results = []
+    completed = True
     async with httpx.AsyncClient(timeout=settings.superhero_timeout_seconds, follow_redirects=True) as http:
         superheroes = SuperheroClient(
             http,
@@ -146,14 +154,34 @@ async def run_benchmark(cases: list[Case], settings: Settings, delay_seconds: fl
 
         for index, case in enumerate(cases, start=1):
             result = await _run_case(case, make_agent, judge)
-            results.append(result)
+            if is_out_of_quota(result):
+                # Recording this as a failure would blame the agent for a quota; stop and resume later instead.
+                print(f"Stopped at {case.id}: no LLM provider available ({result['error']}).\n"
+                      f"Continue with: python -m benchmark.run --resume {results_path}")
+                completed = False
+                break
+            with results_path.open("a", encoding="utf-8") as output:
+                output.write(json.dumps(result, ensure_ascii=False) + "\n")
             print(f"[{index}/{len(cases)}] {case.id:8} {'PASS' if result['passed'] else 'FAIL'} "
                   f"{result['latency_seconds']:5.1f}s {result.get('failed_checks') or result.get('error') or ''}")
             await asyncio.sleep(delay_seconds)
     await llm.close()
     if judge:
         await judge.close()
-    return results
+    return completed
+
+
+def is_out_of_quota(result: dict[str, Any]) -> bool:
+    """Whether a case failed only because every LLM provider stayed unavailable through all retries."""
+    return (result.get("error") or "").startswith(LLMUnavailableError.__name__)
+
+
+def load_results(path: Path) -> list[dict[str, Any]]:
+    """Rows of a results file; a missing file has none."""
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as lines:
+        return [json.loads(line) for line in lines if line.strip()]
 
 
 async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Judge | None) -> dict[str, Any]:
@@ -250,6 +278,8 @@ def main() -> None:
     parser.add_argument("--delay", type=float, default=2.0, help="Seconds to wait between questions")
     parser.add_argument("--summarize", type=Path, metavar="RESULTS_JSONL",
                         help="Rebuild the report for an existing results file instead of running")
+    parser.add_argument("--resume", type=Path, metavar="RESULTS_JSONL",
+                        help="Continue a stopped run: skip questions already in this file and append to it")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -264,15 +294,14 @@ def main() -> None:
         print(report)
         return
 
-    if args.summarize:
-        with args.summarize.open(encoding="utf-8") as lines:
-            results = [json.loads(line) for line in lines if line.strip()]
-        summary_path = args.summarize.with_name(args.summarize.name.replace("-results.jsonl", "-summary.md"))
-    else:
-        results = asyncio.run(run_benchmark(cases, settings, args.delay))
-        with (RESULTS_DIR / f"{stamp}-results.jsonl").open("w", encoding="utf-8") as output:
-            output.writelines(json.dumps(result, ensure_ascii=False) + "\n" for result in results)
-        summary_path = RESULTS_DIR / f"{stamp}-summary.md"
+    results_path = args.summarize or args.resume or RESULTS_DIR / f"{stamp}-results.jsonl"
+    if not args.summarize:
+        done = {result["id"] for result in load_results(results_path)}
+        remaining = [case for case in cases if case.id not in done]
+        print(f"{len(done)} questions already in {results_path.name}, {len(remaining)} to run")
+        asyncio.run(run_benchmark(remaining, settings, args.delay, results_path))
+    results = load_results(results_path)
+    summary_path = results_path.with_name(results_path.name.replace("-results.jsonl", "-summary.md"))
 
     titles = {fold(chunk.title) for chunk in load_collections(settings.documents_dir)[0]}
     summary = summarize(results, {case.id: case for case in load_cases()}, titles, retrieval_rows)
