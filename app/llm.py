@@ -30,7 +30,7 @@ class ModelGlitchError(Exception):
 
 # "This provider can't serve us right now" -> try the next one.
 # Anything else (400 bad request, 401 bad key) is a bug or misconfiguration and should surface.
-_FAILOVER_ERRORS = (
+FAILOVER_ERRORS = (
     openai.RateLimitError,
     openai.APIConnectionError,  # includes timeouts
     openai.InternalServerError,
@@ -142,11 +142,12 @@ class LLMClient:
             LLMUnavailableError: Every provider was rate-limited, timed out or returned 5xx.
             LLMError: A provider rejected the request (e.g. bad key or malformed request).
         """
-        for provider in self._providers:
+        for index, provider in enumerate(self._providers):
             try:
                 return await conversation(partial(self._chat, provider))
-            except _FAILOVER_ERRORS as error:
-                logger.warning("LLM provider %s failed (%s), restarting on next", provider.name, type(error).__name__)
+            except FAILOVER_ERRORS as error:
+                next_step = "restarting on next" if index + 1 < len(self._providers) else "no fallback left"
+                logger.warning("LLM provider %s failed (%s), %s", provider.name, type(error).__name__, next_step)
         raise LLMUnavailableError("All LLM providers are unavailable")
 
     async def complete(
@@ -171,7 +172,7 @@ class LLMClient:
             request |= {"tools": tools, "tool_choice": tool_choice}
         try:
             response = await self._create_with_short_wait(provider, request)
-        except _FAILOVER_ERRORS:
+        except FAILOVER_ERRORS:
             raise  # subclasses of APIError, but run_conversation handles them by switching provider
         except openai.APIError as error:
             logger.error("LLM provider %s rejected request: %s", provider.name, error)

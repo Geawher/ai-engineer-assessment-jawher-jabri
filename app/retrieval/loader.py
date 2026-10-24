@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
 from app.retrieval.base import Chunk
+
+logger = logging.getLogger(__name__)
 
 MAX_CHUNK_CHARS = 1200
 INTRO_SECTION = "Introduction"
@@ -26,12 +29,34 @@ def load_collections(documents_dir: Path) -> tuple[list[Chunk], dict[str, str]]:
     """
     chunks: list[Chunk] = []
     descriptions: dict[str, str] = {}
-    for folder in sorted(path for path in documents_dir.iterdir() if (path / COLLECTION_FILE).is_file()):
-        descriptions[folder.name] = json.loads((folder / COLLECTION_FILE).read_text(encoding="utf-8"))["description"]
-        chunks += load_corpus(folder, collection=folder.name)
+    for folder in sorted(path for path in documents_dir.iterdir() if path.is_dir()):
+        if not (folder / COLLECTION_FILE).is_file():
+            if any(folder.glob("*.md")):
+                logger.warning("Skipping %s: it has articles but no %s", folder, COLLECTION_FILE)
+            continue
+        descriptions[folder.name] = _description(folder / COLLECTION_FILE)
+        collection_chunks = load_corpus(folder, collection=folder.name)
+        if not collection_chunks:
+            raise ValueError(f"Collection {folder} has a {COLLECTION_FILE} but no markdown articles")
+        chunks += collection_chunks
     if not descriptions:
         raise ValueError(f"No document collection (a folder with {COLLECTION_FILE}) under {documents_dir}")
     return chunks, descriptions
+
+
+def _description(path: Path) -> str:
+    """The "description" string from a collection.json.
+
+    Raises:
+        ValueError: Naming the file, if it isn't valid JSON or has no string "description".
+    """
+    try:
+        description = json.loads(path.read_text(encoding="utf-8"))["description"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f'{path} must be JSON like {{"description": "..."}}: {error}') from error
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError(f'{path}: "description" must be a non-empty string')
+    return description
 
 
 def load_corpus(folder: Path, collection: str) -> list[Chunk]:
