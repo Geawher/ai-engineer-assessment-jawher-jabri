@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import openai
 import pytest
@@ -16,9 +18,12 @@ from tests.conftest import CHUNKS, COLLECTIONS, THOR_HERO, FakeSuperheroes, Scri
 
 def make_agent(llm: ScriptedLLM, retriever: BM25Retriever, superheroes: FakeSuperheroes | None = None,
                **options: int) -> Agent:
-    """Build an agent over fakes; options are forwarded as keyword arguments."""
+    """Build an agent over fakes; options are forwarded as keyword arguments.
+
+    Pre-fetching is off unless a test turns it on, so the scripted turns describe the whole tool loop.
+    """
     return Agent(llm, retriever, superheroes or FakeSuperheroes(), collections=COLLECTIONS,
-                 titles=TitleIndex(CHUNKS), **options)
+                 titles=TitleIndex(CHUNKS), **({"prefetch": False} | options))
 
 
 async def test_mythology_question_cites_dataset(retriever):
@@ -317,7 +322,7 @@ async def test_hint_uses_the_alias_that_matched(retriever):
     ajax = Hero(id="13", name="Ajax", profile={"name": "Ajax"})
     llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Ajax Trojan war"})), answer_turn("...")])
     agent = Agent(llm, BM25Retriever(chunks), FakeSuperheroes({"ajax": [ajax]}), collections=COLLECTIONS,
-                  titles=TitleIndex(chunks))
+                  titles=TitleIndex(chunks), prefetch=False)
     await agent.ask("Who is Ajax?")
     assert "'Ajax' also exist(s) in the superhero database" in llm.calls[1]["messages"][-1]["content"]
 
@@ -334,7 +339,7 @@ async def test_empty_search_still_says_so_when_a_hint_is_added(retriever):
     """No passages plus a hint: the model is told the search was empty, then gets the hint."""
     llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Thor xyzzy"})), answer_turn("...")])
     agent = Agent(llm, EmptyRetriever(), FakeSuperheroes({"thor": [THOR_HERO]}), collections=COLLECTIONS,
-                  titles=TitleIndex(CHUNKS))
+                  titles=TitleIndex(CHUNKS), prefetch=False)
     await agent.ask("Thor xyzzy?")
     result = llm.calls[1]["messages"][-1]["content"]
     assert result.startswith("No matching passages found.") and "Note:" in result
@@ -357,3 +362,54 @@ class FailingRepairLLM(ScriptedLLM):
             raise openai.RateLimitError("slow down", response=httpx.Response(429, request=httpx.Request("POST", "http://x")),
                                         body=None)
         return await super().complete(messages, tools=tools, tool_choice=tool_choice)
+
+
+class TestPrefetch:
+    async def test_names_in_the_question_are_fetched_before_the_first_call(self, retriever):
+        """'Who is Thor?' arrives with the Thor passages and the Thor hero already in the conversation."""
+        llm = ScriptedLLM([answer_turn("Thor is a thunder god [S1], published by Marvel [S2].")])
+        agent = make_agent(llm, retriever, FakeSuperheroes({"thor": [THOR_HERO]}), prefetch=True)
+        response = await agent.ask("Who is Thor?")
+
+        assert len(llm.calls) == 1  # one LLM call instead of a tool round plus an answer
+        messages = llm.calls[0]["messages"]
+        calls = messages[2]["tool_calls"]
+        assert [(call["function"]["name"], json.loads(call["function"]["arguments"])) for call in calls] == [
+            (ToolName.SEARCH_DOCUMENTS, {"query": "Who is Thor?"}), (ToolName.GET_SUPERHERO, {"name": "Thor"})]
+        assert messages[3]["content"].startswith("[S1] (mythology) Thor") and "Note:" not in messages[3]["content"]
+        assert {source.type for source in response.sources} == {SourceType.DOCUMENT, SourceType.SUPERHERO_API}
+
+    async def test_each_figure_gets_its_own_search(self, retriever):
+        """Two figures, two searches, each led by its figure's name."""
+        llm = ScriptedLLM([answer_turn("...")])
+        await make_agent(llm, retriever, prefetch=True).ask("Is Odin the father of Thor?")
+        queries = [json.loads(call["function"]["arguments"])["query"] for call in llm.calls[0]["messages"][2]["tool_calls"]]
+        assert queries == ["Odin Is Odin the father of Thor?", "Thor Is Odin the father of Thor?"]
+
+    async def test_only_exact_superhero_names_are_fetched(self, retriever):
+        """A capitalized word that only partly matches a hero (or is a question word) adds no lookup."""
+        heroes = FakeSuperheroes({"batman": [Hero(id="69", name="Batman", profile={})],
+                                  "compare": [Hero(id="1", name="Compare Man", profile={})]})
+        llm = ScriptedLLM([answer_turn("...")])
+        await make_agent(llm, retriever, heroes, prefetch=True).ask("Compare Batman's intelligence. What now?")
+        calls = llm.calls[0]["messages"][2]["tool_calls"]
+        assert [json.loads(call["function"]["arguments"]) for call in calls] == [{"name": "Batman"}]
+
+    async def test_question_without_names_goes_straight_to_the_model(self, retriever):
+        """No names, no tool exchange: off-topic questions cost exactly what they did before."""
+        llm = ScriptedLLM([answer_turn("I only cover mythology and superheroes.")])
+        await make_agent(llm, retriever, prefetch=True).ask("What is 17 multiplied by 23?")
+        assert [message["role"] for message in llm.calls[0]["messages"]] == ["system", "user"]
+
+    async def test_superhero_outage_during_prefetch_still_searches_documents(self, retriever):
+        """The lookup is a shortcut: if the API is down, the documents are still fetched and nothing is raised."""
+        llm = ScriptedLLM([answer_turn("Thor is a thunder god [S1].")])
+        await make_agent(llm, retriever, FakeSuperheroes(is_down=True), prefetch=True).ask("Who is Thor?")
+        calls = llm.calls[0]["messages"][2]["tool_calls"]
+        assert [call["function"]["name"] for call in calls] == [ToolName.SEARCH_DOCUMENTS]
+
+    async def test_repeating_a_prefetched_call_is_short_circuited(self, retriever):
+        """The model asking again for what it was given gets told it already has it."""
+        llm = ScriptedLLM([tool_turn((ToolName.SEARCH_DOCUMENTS, {"query": "Who is Thor?"})), answer_turn("...")])
+        await make_agent(llm, retriever, prefetch=True).ask("Who is Thor?")
+        assert llm.calls[1]["messages"][-1]["content"] == DUPLICATE_CALL

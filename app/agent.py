@@ -12,6 +12,7 @@ from pydantic import BaseModel, StringConstraints, ValidationError, field_valida
 
 from app.llm import FAILOVER_ERRORS, AssistantTurn, Chat, LLMClient, LLMError, TokenUsage, ToolCall
 from app.retrieval.base import Retriever
+from app.retrieval.bm25 import tokenize
 from app.retrieval.titles import TitleIndex
 from app.schemas import AskResponse, Source, SourceType
 from app.sources.superhero import Hero, SuperheroAPIError
@@ -101,6 +102,12 @@ SUPERHERO_HINT = ("Note: {names} also exist(s) in the superhero database ({tool}
 DOCUMENT_HINT = ("Note: '{name}' also appears in the '{collections}' document collection ({tool}). If the "
                  "question could be about that, search it too.")
 MAX_HINT_LOOKUPS = 3  # names per search worth checking against the superhero database (looked up in parallel)
+# Pre-fetching: names in the question are searched before the first LLM call, saving the model a tool round.
+MAX_PREFETCH_NAMES = 3
+PREFETCH_CALL_PREFIX = "prefetch_"
+MAX_PREFETCH_HEROES = 4  # one more than names: a sentence's capitalized first word ("Compare") takes a slot
+# Capitalized phrases ("Iron Man", "Spider-Man" in "Spider-Man's"), the candidate superhero names in a question.
+_CAPITALIZED_RE = re.compile(r"\b[A-Z][\w-]*(?:\s+[A-Z][\w-]*)*")
 NO_PASSAGES = "No matching passages found."
 SUPERHERO_UNAVAILABLE = "ERROR: the Superhero API is unavailable right now. Tell the user superhero data could not be retrieved."
 _CITATION_RE = re.compile(r"\bS\d+\b")
@@ -203,7 +210,8 @@ class Agent:
     """Answers a question by letting the LLM call retrieval tools, then attributes the answer to sources."""
 
     def __init__(self, llm: LLMClient, retriever: Retriever, superheroes: HeroSearch, *,
-                 collections: dict[str, str], titles: TitleIndex, top_k: int = 4, max_tool_rounds: int = 3):
+                 collections: dict[str, str], titles: TitleIndex, top_k: int = 4, max_tool_rounds: int = 3,
+                 prefetch: bool = True):
         """Create an agent.
 
         Args:
@@ -214,6 +222,7 @@ class Agent:
             titles: Article names per collection, used for cross-source hints.
             top_k: Passages returned per document search.
             max_tool_rounds: Model turns allowed to call tools before an answer is forced.
+            prefetch: Search the names in the question before the first LLM call (see _prefetch_calls).
         """
         self._llm = llm
         self._retriever = retriever
@@ -222,6 +231,7 @@ class Agent:
         self._titles = titles
         self._top_k = top_k
         self._max_tool_rounds = max_tool_rounds
+        self._prefetch = prefetch
         self._system_prompt = build_system_prompt(collections)
         self._tools = build_tools(collections)
 
@@ -266,6 +276,11 @@ class Agent:
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": question},
         ]
+        if self._prefetch and (prefetched := await self._prefetch_calls(question)):
+            # Shown to the model as its own first tool round, so ids, hints and citations work as usual.
+            state.mark_used(prefetched)
+            results = await asyncio.gather(*(self._run_tool(call, state) for call in prefetched))
+            messages += _tool_exchange(AssistantTurn(content=None, model="", tool_calls=prefetched), results)
         turn = await counted_chat(messages, tools=self._tools)
         rounds = 0
         while turn.tool_calls and rounds < self._max_tool_rounds:
@@ -285,6 +300,39 @@ class Agent:
         if state.sources and (uncited := uncited_sentences(_clean_answer(turn.content or ""), state.sources)):
             turn = await self._repair_citations(counted_chat, messages, turn, uncited, state.sources)
         return turn, state
+
+    async def _prefetch_calls(self, question: str) -> list[ToolCall]:
+        """The tool calls the model would almost certainly make first, worked out from the names in the question.
+
+        - Article names (TitleIndex) -> a document search: the question itself when it names one figure,
+          else one search per figure led by its name (rule 2: one search rarely covers two).
+        - Capitalized phrases and article names that are exactly a superhero's name -> a superhero lookup.
+          The candidates are checked against the API (cached, in parallel), so "France" or "Who" add nothing.
+
+        A question with no recognisable name ("What is 17 times 23?") gets no calls and costs nothing extra.
+        """
+        figures = self._titles.names_in(question)[:MAX_PREFETCH_NAMES]
+        searches = [question] if len(figures) == 1 else [f"{figure} {question}" for figure in figures]
+        calls = [(ToolName.SEARCH_DOCUMENTS, {"query": query}) for query in searches]
+        calls += [(ToolName.GET_SUPERHERO, {"name": name}) for name in await self._superhero_names_in(question)]
+        return [ToolCall(id=f"{PREFETCH_CALL_PREFIX}{index}", name=name, arguments=json.dumps(args, ensure_ascii=False))
+                for index, (name, args) in enumerate(calls)]
+
+    async def _superhero_names_in(self, question: str) -> list[str]:
+        """Names in the question that exactly match a superhero; an API outage just means none are found."""
+        candidates = list(dict.fromkeys([*self._titles.names_in(question, figures_only=True),
+                                         *_capitalized_names(question)]))[:MAX_PREFETCH_HEROES]
+        lookups = await asyncio.gather(*(self._superheroes.search(name) for name in candidates), return_exceptions=True)
+        names = []
+        for name, heroes in zip(candidates, lookups, strict=True):
+            if isinstance(heroes, SuperheroAPIError):
+                logger.warning("Superhero prefetch for %r failed: %s", name, heroes)
+                continue
+            if isinstance(heroes, BaseException):
+                raise heroes
+            if any(hero.name.lower() == name.lower() for hero in heroes):
+                names.append(name)
+        return names
 
     async def _repair_citations(self, chat: Chat, messages: list[dict[str, Any]], turn: AssistantTurn,
                                 uncited: list[str], issued: Collection[str]) -> AssistantTurn:
@@ -412,6 +460,26 @@ def uncited_sentences(answer: str, issued: Collection[str]) -> list[str]:
         uncited += [sentence for sentence in _SENTENCE_SPLIT_RE.split(text)
                     if len(sentence.split()) >= MIN_FACT_WORDS and not _NO_ANSWER_RE.search(sentence)]
     return uncited
+
+
+def _capitalized_names(text: str) -> list[str]:
+    """Capitalized phrases that could be names: "Is Spider-Man a Norse god?" -> ["Spider-Man", "Norse"].
+
+    Leading stopwords are dropped ("Is", "Who"). A sentence's first word is capitalized anyway, so a phrase
+    starting a sentence is also offered without it: "Compare Batman and Robin" -> "Compare Batman", "Batman".
+    """
+    names = []
+    for match in _CAPITALIZED_RE.finditer(text):
+        words = match.group().split()
+        while words and not tokenize(words[0]):
+            words.pop(0)
+        if not words:
+            continue
+        names.append(" ".join(words))
+        starts_sentence = not text[:match.start()].strip() or text[:match.start()].rstrip()[-1] in ".!?"
+        if starts_sentence and len(words) > 1:
+            names.append(" ".join(words[1:]))
+    return list(dict.fromkeys(names))
 
 
 def _clean_answer(answer: str) -> str:
