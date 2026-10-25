@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.retrieval.bm25 import tokenize
 from app.retrieval.loader import MAX_CHUNK_CHARS, parse_article
 
@@ -23,6 +25,18 @@ A second section that reuses an earlier heading.
 def test_tokenize_folds_accents_and_drops_stopwords():
     """Accented and unaccented spellings produce the same tokens; stopwords are removed."""
     assert tokenize("The hammer Mjölnir at Ragnarök") == ["hammer", "mjolnir", "ragnarok"]
+
+
+@pytest.mark.parametrize(("text", "tokens"), [
+    ("Höðr", ["hodr"]),
+    ("Þrymskviða", ["thrymskvida"]),
+    ("Æsir", ["aesir"]),
+    ("Njörðr", ["njordr"]),
+    ("Sørensen", ["sorensen"]),
+])
+def test_tokenize_folds_letters_unicode_does_not_decompose(text, tokens):
+    """ð, þ, æ, ø (and similar) fold to plain letters, so unaccented spellings match."""
+    assert tokenize(text) == tokens
 
 
 def test_parse_article_splits_by_section_with_anchors():
