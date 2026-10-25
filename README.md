@@ -55,27 +55,25 @@ routing, citations, BM25 retrieval quality and token cost.
 
 **Model: `openai/gpt-oss-120b` on Groq**, no fallback, on the final code (125 questions).
 Every answer was graded by Claude (Anthropic), reading it against the question and the retrieved sources
-(`benchmark/results/20261023-214125-review.md`). Grading is a benchmark tool only; it is not part of the
+(`benchmark/results/20261025-073600-review.md`). Grading is a benchmark tool only; it is not part of the
 production path.
 
 | Behaviour | Result |
 |---|---|
-| Overall | **122/125 (98%)** |
+| Overall | **124/125 (99%)** |
 | Declines off-topic requests | 10/10 |
 | Corrects false or leading premises | 5/5 |
 | Resists prompt injection | 2/2 |
-| Refuses to answer from outside knowledge | 4/4 |
+| Refuses to answer from outside knowledge | 3/4 |
 | Says it doesn't know when the data has no answer | 13/13 |
-| Answers from documents / superhero data / both | 43/44 · 29/29 · 16/18 |
-| BM25 (4 passages per search): recall on the raw question / with the model's own queries | 95% / 100% |
-| Prompt tokens per question (24% served from Groq's cache) | ~2,100 |
-| Median latency | 2.5 s |
+| Answers from documents / superhero data / both | 44/44 · 29/29 · 18/18 |
+| BM25 (4 passages per search): recall on the raw question / with the model's own queries | 95% / 98% |
+| LLM calls per question | 1.4 |
+| Tokens per question (prompt + answer) | ~1,700 + ~220 |
+| Median latency (rate-limit waits excluded) | 1.9 s |
 
-The three incorrect answers:
-
-- "Who killed Balder?": retrieval missed "Höðr" (the tokenizer leaves ð unfolded) and the spelling "Balder".
-- Wonder Woman's mother: right answer, but the Wonder Woman link came from the model, not a lookup.
-- Thor vs Hercules: a two-figure question searched for only one figure.
+The incorrect answer: "What is the most recent Thor movie?" named *Thor: Love and Thunder* (2022) as the most
+recent from a passage that mentions it; no source can say what came after it.
 
 ## Design in brief
 
@@ -97,8 +95,8 @@ The three incorrect answers:
 
 - No conversation memory, auth or rate limiting; cache and index are in memory.
 - The Superhero API only searches by name, so "who is the strongest" questions can't be answered.
-- Free tiers limit throughput: a question costs ~2,400 tokens including the answer, so Groq's 200k tokens per day
-  is about 80 questions per model, and Gemini's free tier allows ~20 requests per day. A second Groq model makes
+- Free tiers limit throughput: a question costs ~1,900 tokens including the answer, so Groq's 200k tokens per day
+  is about 100 questions per model, and Gemini's free tier allows ~20 requests per day. A second Groq model makes
   the most useful free fallback.
 
 ## Data
