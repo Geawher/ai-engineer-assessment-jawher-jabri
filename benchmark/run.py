@@ -55,6 +55,11 @@ class Trace:
     models: list[str] = field(default_factory=list)
     # Per LLM call, abandoned attempts included: they cost tokens too.
     usage: list[dict[str, int]] = field(default_factory=list)
+    # Per LLM call: wall time, and the part of it spent waiting out a rate limit (not the pipeline's own speed).
+    llm_seconds: list[float] = field(default_factory=list)
+    rate_limit_waits: list[float] = field(default_factory=list)
+    call_attempts: list[int] = field(default_factory=list)  # provider attempt each call belonged to
+    turn_tool_calls: list[int] = field(default_factory=list)  # tool calls each turn asked for (0: an answer)
     provider_attempts: int = 0
 
     def start_attempt(self) -> None:
@@ -115,8 +120,13 @@ class RecordingLLM:
 
             async def recording_chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
                                      tool_choice: ToolChoice = "auto") -> AssistantTurn:
-                """Delegate one turn and record its model."""
+                """Delegate one turn and record its model, tokens and timing."""
+                started = time.monotonic()
                 turn = await chat(messages, tools=tools, tool_choice=tool_choice)
+                self.trace.llm_seconds.append(round(time.monotonic() - started, 2))
+                self.trace.rate_limit_waits.append(turn.waited_seconds)
+                self.trace.call_attempts.append(self.trace.provider_attempts)
+                self.trace.turn_tool_calls.append(len(turn.tool_calls))
                 self.trace.models.append(turn.model)
                 self.trace.usage.append(asdict(turn.usage))
                 return turn
@@ -264,6 +274,7 @@ async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Jud
     error = None
     out_of_quota = False
     benchmark_retries = 0
+    benchmark_wait = 0.0
     for retry_delay in (*RETRY_DELAYS_SECONDS, None):
         trace = Trace()  # a retry starts clean, so its tool calls aren't mixed with the failed attempt's
         try:
@@ -275,6 +286,7 @@ async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Jud
                 break
             print(f"    all providers unavailable, retrying in {retry_delay}s")
             benchmark_retries += 1
+            benchmark_wait += retry_delay
             await asyncio.sleep(retry_delay)
         except LLMError as exc:
             error, out_of_quota = f"{type(exc).__name__}: {exc}", False
@@ -287,6 +299,7 @@ async def _run_case(case: Case, make_agent: Callable[[Trace], Agent], judge: Jud
         "question": case.question,
         "latency_seconds": round(time.monotonic() - started, 2),
         "benchmark_retries": benchmark_retries,
+        "benchmark_wait_seconds": benchmark_wait,
         **asdict(trace),
     }
     if response is None:

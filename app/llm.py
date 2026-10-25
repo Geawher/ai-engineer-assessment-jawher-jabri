@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, Literal, TypeVar
 
@@ -74,6 +74,7 @@ class AssistantTurn:
     model: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
+    waited_seconds: float = 0.0  # time spent waiting out a rate limit before this reply
 
 
 Chat = Callable[..., Awaitable[AssistantTurn]]
@@ -171,7 +172,7 @@ class LLMClient:
         if tools:
             request |= {"tools": tools, "tool_choice": tool_choice}
         try:
-            response = await self._create_with_short_wait(provider, request)
+            response, waited = await self._create_with_short_wait(provider, request)
         except FAILOVER_ERRORS:
             raise  # subclasses of APIError, but run_conversation handles them by switching provider
         except openai.APIError as error:
@@ -179,27 +180,32 @@ class LLMClient:
             raise LLMError(f"LLM provider {provider.name} rejected the request") from error
 
         logger.info("LLM reply from %s (%s)", provider.name, provider.model)
-        return _to_turn(response.choices[0].message, provider.model, _usage(response))
+        return replace(_to_turn(response.choices[0].message, provider.model, _usage(response)), waited_seconds=waited)
 
-    async def _create_with_short_wait(self, provider: Provider, request: dict[str, Any]) -> Any:
+    async def _create_with_short_wait(self, provider: Provider, request: dict[str, Any]) -> tuple[Any, float]:
         """Call the provider, retrying once on the two failures a second try usually fixes.
 
         - A short rate limit: per-minute token limits reset within seconds, so waiting keeps the
           conversation on this provider. A long Retry-After (a daily quota) is left to failover.
         - A malformed tool call the provider refused to return (Groq's `tool_use_failed`): a resample
           usually succeeds; if it fails again the model is struggling, so fail over.
+
+        Returns:
+            The provider's response and the seconds spent waiting out a rate limit (0 if none).
         """
         create = partial(provider.client.chat.completions.create, model=provider.model, **request)
         has_waited = has_resampled = False
+        waited = 0.0
         while True:
             try:
-                return await create()
+                return await create(), waited
             except openai.RateLimitError as error:
                 wait = _retry_after_seconds(error)
                 if has_waited or wait is None or wait > self._max_rate_limit_wait:
                     raise
                 logger.info("LLM provider %s rate-limited, waiting %.1fs", provider.name, wait)
                 has_waited = True
+                waited += wait
                 await asyncio.sleep(wait)
             except openai.BadRequestError as error:
                 if error.code != _MALFORMED_TOOL_CALL:

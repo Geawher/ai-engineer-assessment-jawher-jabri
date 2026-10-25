@@ -258,6 +258,7 @@ def _cost_lines(results: list[Result]) -> list[str]:
              f"by model: {dict(models)}",
              f"- Questions that needed a provider restart: {sum(result['provider_attempts'] > 1 for result in results)}; "
              f"benchmark retries (all providers down): {sum(result['benchmark_retries'] for result in results)}"]
+    lines += _work_time_lines(results)
     totals = [{key: sum(call[key] for call in result.get("usage", [])) for key in ("prompt", "completion", "cached_prompt")}
               for result in results if result.get("usage")]
     if totals:
@@ -267,6 +268,24 @@ def _cost_lines(results: list[Result]) -> list[str]:
                   f"{sum(total['completion'] for total in totals) / len(totals):.0f} completion; "
                   f"{100 * cached / prompt if prompt else 0:.0f}% of prompt tokens served from the provider cache"]
     return lines + [""]
+
+
+def _work_time_lines(results: list[Result]) -> list[str]:
+    """Latency with rate-limit and retry waits taken out, split into LLM and everything else.
+
+    Waits depend on the free tier's quota, not on the pipeline, so comparing pipeline changes needs them removed.
+    Results files written before timing was recorded have nothing to report.
+    """
+    timed = [result for result in results if "rate_limit_waits" in result]
+    if not timed:
+        return []
+    waits = [sum(result["rate_limit_waits"]) + result.get("benchmark_wait_seconds", 0) for result in timed]
+    work = sorted(result["latency_seconds"] - wait for result, wait in zip(timed, waits, strict=True))
+    llm = sum(sum(result["llm_seconds"]) - sum(result["rate_limit_waits"]) for result in timed)
+    return [f"- Latency without rate-limit waits: p50 {statistics.median(work):.1f}s, "
+            f"p95 {work[math.ceil(len(work) * 0.95) - 1]:.1f}s, max {work[-1]:.1f}s; "
+            f"LLM calls are {100 * llm / sum(work):.0f}% of it",
+            f"- Rate-limit waits: {sum(wait > 0 for wait in waits)} questions, {sum(waits):.0f}s in total"]
 
 
 def _judge_lines(results: list[Result]) -> list[str]:
