@@ -344,7 +344,7 @@ class Agent:
         """Note which article names in the query are also comic-book characters, unless heroes are already being looked up."""
         if ToolName.GET_SUPERHERO in state.tools_used:
             return None
-        candidates = self._titles.names_in(query)[:MAX_HINT_LOOKUPS]
+        candidates = self._titles.names_in(query, figures_only=True)[:MAX_HINT_LOOKUPS]
         lookups = await asyncio.gather(*(self._superheroes.search(name) for name in candidates), return_exceptions=True)
         names = []
         for name, heroes in zip(candidates, lookups, strict=True):

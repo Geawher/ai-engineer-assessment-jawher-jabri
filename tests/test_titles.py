@@ -91,3 +91,10 @@ def test_collection_without_articles_is_an_error(tmp_path):
     (tmp_path / "empty" / "collection.json").write_text('{"description": "Nothing yet."}')
     with pytest.raises(ValueError, match="no markdown articles"):
         load_collections(tmp_path)
+
+
+def test_overview_articles_are_not_offered_as_figures():
+    """'Norse mythology' in the 'mythology' collection is a topic, not a name worth looking up as a character."""
+    index = TitleIndex([chunk("Norse mythology"), chunk("Odin")])
+    assert index.names_in("Odin in Norse mythology") == ["Odin", "Norse mythology"]
+    assert index.names_in("Odin in Norse mythology", figures_only=True) == ["Odin"]
